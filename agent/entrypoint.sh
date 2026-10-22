@@ -7,6 +7,7 @@
 #   PLAYBOOK_TIMEOUT  seconds before the turn is stopped (default 3600)
 #   GITHUB_REPOSITORY owner/name to clone, with GITHUB_TOKEN; without it, /work/repo must be mounted
 #   GITHUB_TOKEN      installation token of the turn; never written to disk or to the log
+#   PLAYBOOK_BRANCH   the working branch of the workflow to clone; default: the default branch
 # Exit codes: 0 done; 64 wrong settings or unknown agent; 65 clone failed; 124 timeout; others from opencode.
 set -euo pipefail
 
@@ -30,7 +31,9 @@ if [[ -n "${GITHUB_REPOSITORY:-}" ]]; then
     git config --global user.name "playbook-${agent}"
     git config --global user.email "playbook-${agent}@users.noreply.github.com"
     say "cloning ${GITHUB_REPOSITORY}"
-    if ! git clone --quiet "https://github.com/${GITHUB_REPOSITORY}.git" "$repo"; then
+    clone=(git clone --quiet)
+    [[ -n "${PLAYBOOK_BRANCH:-}" ]] && clone+=(--branch "$PLAYBOOK_BRANCH")
+    if ! "${clone[@]}" "https://github.com/${GITHUB_REPOSITORY}.git" "$repo"; then
         say "clone of ${GITHUB_REPOSITORY} failed"
         exit 65
     fi
