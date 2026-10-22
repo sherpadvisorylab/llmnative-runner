@@ -1,0 +1,48 @@
+# The runner of one company: its dispatcher, the agent image it starts one turn at a time and, on a
+# machine without a reverse proxy, Caddy for HTTPS. See docs/runner-setup.md.
+#   docker compose --profile build build            # the two images, on the machine
+#   docker compose up -d                            # behind a proxy you already have (e.g. Coolify)
+#   docker compose --profile proxy up -d            # with Caddy on 80/443 for DISPATCHER_DOMAIN
+name: playbook-runner
+
+services:
+  dispatcher:
+    build: ./dispatcher
+    image: ${DISPATCHER_IMAGE:-playbook-dispatcher:local}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      PORT: "8080"
+    volumes:
+      # The dispatcher starts the agent containers next to itself.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - dispatcher-data:/data
+    expose:
+      - "8080"
+    ports:
+      # Health and webhook on the machine only; the proxy publishes them.
+      - "127.0.0.1:${DISPATCHER_PORT:-8080}:8080"
+
+  # Built here, never started by compose: the dispatcher runs it once per turn (AGENT_IMAGE).
+  agent:
+    build: ./agent
+    image: ${AGENT_IMAGE:-playbook-agent:1.19.3}
+    profiles: ["build"]
+
+  caddy:
+    image: caddy:2.8.4
+    profiles: ["proxy"]
+    restart: unless-stopped
+    command: caddy reverse-proxy --from ${DISPATCHER_DOMAIN:?set DISPATCHER_DOMAIN} --to dispatcher:8080
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+    depends_on:
+      - dispatcher
+
+volumes:
+  dispatcher-data:
+  caddy-data:
