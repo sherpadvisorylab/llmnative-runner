@@ -34,7 +34,8 @@ services:
     image: caddy:2.8.4
     profiles: ["proxy"]
     restart: unless-stopped
-    command: caddy reverse-proxy --from ${DISPATCHER_DOMAIN:?set DISPATCHER_DOMAIN} --to dispatcher:8080
+    # DISPATCHER_DOMAIN in .env: the DNS name pointing to this machine.
+    command: caddy reverse-proxy --from ${DISPATCHER_DOMAIN:-} --to dispatcher:8080
     ports:
       - "80:80"
       - "443:443"
