@@ -1,19 +1,26 @@
-import { readConfig } from './config.ts';
+import { readLegacyCompany, readCompanyConfig, readMachineConfig } from './config.ts';
 import { appJwt, retryingFetch } from './github.ts';
+import { readCompanyFiles } from './tenants.ts';
 
-// Points the webhook of the company App at this dispatcher, with its secret:
-//   node src/setWebhook.ts https://<domain>/webhook
-// It reads the same settings as the dispatcher (GITHUB_APP_ID, the key, GITHUB_WEBHOOK_SECRET), so the
-// secret never leaves the machine. GitHub sets the URL and the secret through the API; "Active" and the
-// events (Issues, Push) are ticked once in the settings of the App.
+// Points the webhook of the App of a company at this runner, with its secret:
+//   node src/setWebhook.ts <company> https://<runner>/<company>/webhook
+// It reads the .env of that company on the machine, so the secret never leaves it. GitHub sets the
+// URL and the secret through the API; "Active" and the events (Issues, Push) are ticked once in the
+// settings of an App created without its webhook.
 
 async function main() {
-    const url = process.argv[2];
-    if (!url || !/^https:\/\/[^/]+\/webhook$/.test(url)) {
-        console.error('Usage: node src/setWebhook.ts https://<domain>/webhook');
+    const [company, url] = process.argv.slice(2);
+    if (!company || !url || !/^https:\/\/[^/]+(\/[a-z0-9-]+)?\/webhook$/.test(url)) {
+        console.error('Usage: node src/setWebhook.ts <company> https://<runner>/<company>/webhook');
         process.exit(64);
     }
-    const config = readConfig();
+    const file = readCompanyFiles(readMachineConfig().companiesDir).find((item) => item.id === company);
+    const legacy = readLegacyCompany();
+    const config = file ? readCompanyConfig(company, file.vars) : legacy?.id === company ? legacy : null;
+    if (!config) {
+        console.error(`No .env of ${company} on this runner`);
+        process.exit(64);
+    }
     if (!config.webhookSecret) {
         console.error('GITHUB_WEBHOOK_SECRET is missing');
         process.exit(64);

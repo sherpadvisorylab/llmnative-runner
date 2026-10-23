@@ -1,8 +1,11 @@
 import { readFileSync } from 'node:fs';
 
-// The settings of the dispatcher, from the environment (see runner/.env.example).
+// The settings of the dispatcher of a runner. The machine ones come from the environment of the
+// container; each company has its own file, <COMPANIES_DIR>/<company>/.env, with its GitHub App, the
+// secret of its webhook, the token of its studio and the keys of its models. A company only ever
+// works with its own file.
 
-/** The variables handed to every turn when set: the keys of the model providers and the memory. */
+/** The variables of a company handed to its turns when set: the keys of the model providers and the memory. */
 export const DEFAULT_AGENT_ENV = [
     'OPENCODE_API_KEY',
     'ANTHROPIC_API_KEY',
@@ -19,55 +22,97 @@ export const DEFAULT_AGENT_ENV = [
     'PLAYBOOK_MEMORY',
 ];
 
-export interface Config {
+export const COMPANY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+export interface MachineConfig {
     port: number;
     dataDir: string;
-    appId: string;
-    privateKey: string;
-    installationId?: number;
-    webhookSecret?: string;
-    /** The token the studio of the company sends to read `/state` and `/events`. */
-    studioToken?: string;
+    /** Where the files of the companies are: one folder each, with its .env. */
+    companiesDir: string;
     image: string;
+    /** Turns at once on the whole machine, every company together. */
     maxParallel: number;
     turnTimeout: number;
     failuresToBlock: number;
     reconcileMinutes: number;
     memory?: string;
     network?: string;
+}
+
+export interface CompanyConfig {
+    id: string;
+    appId: string;
+    privateKey: string;
+    installationId?: number;
+    webhookSecret?: string;
+    /** The token the studio of the company sends to read its `/state`, `/events` and `/output`. */
+    studioToken?: string;
+    /** Turns at once of this company. */
+    maxParallel: number;
     agentEnv: Record<string, string>;
 }
 
 export class ConfigError extends Error {}
 
-const positive = (env: NodeJS.ProcessEnv, name: string, fallback: number) => {
-    const value = env[name] === undefined || env[name] === '' ? fallback : Number(env[name]);
+type Vars = Record<string, string | undefined>;
+
+const positive = (vars: Vars, name: string, fallback: number) => {
+    const value = vars[name] === undefined || vars[name] === '' ? fallback : Number(vars[name]);
     if (!Number.isInteger(value) || value < 1) throw new ConfigError(`${name} must be a whole number of at least 1`);
     return value;
 };
 
-export function readConfig(env: NodeJS.ProcessEnv = process.env, readFile = (path: string) => readFileSync(path, 'utf8')): Config {
-    const appId = env.GITHUB_APP_ID?.trim();
-    if (!appId) throw new ConfigError('GITHUB_APP_ID is missing');
-    const privateKey = (env.GITHUB_APP_PRIVATE_KEY_FILE ? readFile(env.GITHUB_APP_PRIVATE_KEY_FILE) : env.GITHUB_APP_PRIVATE_KEY ?? '').replace(/\\n/g, '\n').trim();
-    if (!privateKey.includes('PRIVATE KEY')) throw new ConfigError('GITHUB_APP_PRIVATE_KEY (or GITHUB_APP_PRIVATE_KEY_FILE) is missing or not a PEM key');
-    const names = [...DEFAULT_AGENT_ENV, ...(env.AGENT_ENV ?? '').split(',').map((name) => name.trim()).filter(Boolean)];
-    const agentEnv = Object.fromEntries(names.filter((name) => env[name]).map((name) => [name, env[name]!]));
+/** A .env file: KEY=value lines, comments and blank lines skipped, quotes around a value removed. */
+export function parseEnvFile(text: string): Record<string, string> {
+    const vars: Record<string, string> = {};
+    for (const line of text.split(/\r?\n/)) {
+        const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
+        if (!match || line.trim().startsWith('#')) continue;
+        vars[match[1]] = match[2].trim().replace(/^(['"])(.*)\1$/, '$2');
+    }
+    return vars;
+}
+
+export function readMachineConfig(env: Vars = process.env): MachineConfig {
     return {
         port: positive(env, 'PORT', 8080),
         dataDir: env.DATA_DIR || '/data',
-        appId,
-        privateKey,
-        installationId: env.GITHUB_INSTALLATION_ID ? positive(env, 'GITHUB_INSTALLATION_ID', 0) : undefined,
-        webhookSecret: env.GITHUB_WEBHOOK_SECRET || undefined,
-        studioToken: env.DISPATCHER_TOKEN || undefined,
+        companiesDir: env.COMPANIES_DIR || '/companies',
         image: env.AGENT_IMAGE || 'ghcr.io/sherpadvisorylab/playbook-agent:1.19.3',
-        maxParallel: positive(env, 'MAX_PARALLEL', 1),
+        maxParallel: positive(env, 'MAX_PARALLEL', 2),
         turnTimeout: positive(env, 'TURN_TIMEOUT', 3600),
         failuresToBlock: positive(env, 'FAILURES_TO_BLOCK', 2),
         reconcileMinutes: positive(env, 'RECONCILE_MINUTES', 10),
         memory: env.AGENT_MEMORY || undefined,
         network: env.AGENT_NETWORK || undefined,
-        agentEnv,
     };
+}
+
+/** The settings of one company, from its own variables. */
+export function readCompanyConfig(id: string, vars: Vars, readFile = (path: string) => readFileSync(path, 'utf8')): CompanyConfig {
+    if (!COMPANY_ID_PATTERN.test(id)) throw new ConfigError(`${id}: not a company id`);
+    const appId = vars.GITHUB_APP_ID?.trim();
+    if (!appId) throw new ConfigError(`${id}: GITHUB_APP_ID is missing`);
+    const privateKey = (vars.GITHUB_APP_PRIVATE_KEY_FILE ? readFile(vars.GITHUB_APP_PRIVATE_KEY_FILE) : vars.GITHUB_APP_PRIVATE_KEY ?? '').replace(/\\n/g, '\n').trim();
+    if (!privateKey.includes('PRIVATE KEY')) throw new ConfigError(`${id}: GITHUB_APP_PRIVATE_KEY (or GITHUB_APP_PRIVATE_KEY_FILE) is missing or not a PEM key`);
+    const names = [...DEFAULT_AGENT_ENV, ...(vars.AGENT_ENV ?? '').split(',').map((name) => name.trim()).filter(Boolean)];
+    return {
+        id,
+        appId,
+        privateKey,
+        installationId: vars.GITHUB_INSTALLATION_ID ? positive(vars, 'GITHUB_INSTALLATION_ID', 0) : undefined,
+        webhookSecret: vars.GITHUB_WEBHOOK_SECRET || undefined,
+        studioToken: vars.DISPATCHER_TOKEN || undefined,
+        maxParallel: positive(vars, 'MAX_PARALLEL', 1),
+        agentEnv: Object.fromEntries(names.filter((name) => vars[name]).map((name) => [name, vars[name]!])),
+    };
+}
+
+/**
+ * A dispatcher started the old way, with one company in its own environment: that company, named by
+ * COMPANY_ID, served at the root as before and under its path as the others.
+ */
+export function readLegacyCompany(env: Vars = process.env): CompanyConfig | null {
+    if (!env.GITHUB_APP_ID) return null;
+    return readCompanyConfig(env.COMPANY_ID || 'default', env);
 }

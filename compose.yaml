@@ -1,48 +1,45 @@
-# The runner of one company: its dispatcher, the agent image it starts one turn at a time and, on a
-# machine without a reverse proxy, Caddy for HTTPS. See docs/runner-setup.md.
-#   docker compose --profile build build            # the two images, on the machine
-#   docker compose up -d                            # behind a proxy you already have (e.g. Coolify)
-#   docker compose --profile proxy up -d            # with Caddy on 80/443 for DISPATCHER_DOMAIN
+# A runner: one dispatcher for every company of /opt/playbook/companies (each with its own .env), the
+# agent image it starts one turn at a time and, on a machine without a reverse proxy, Caddy for HTTPS.
+# The studio writes this same file, filled in, in the guide of each runner (Runners → the runner).
+#   RUNNER_DOMAIN=agents.example.com docker compose up -d
 name: playbook-runner
 
 services:
   dispatcher:
+    image: ${DISPATCHER_IMAGE:-ghcr.io/sherpadvisorylab/playbook-dispatcher:latest}
     build: ./dispatcher
-    image: ${DISPATCHER_IMAGE:-playbook-dispatcher:local}
     restart: unless-stopped
-    env_file: .env
     environment:
       DATA_DIR: /data
+      COMPANIES_DIR: /companies
       PORT: "8080"
+      AGENT_IMAGE: ${AGENT_IMAGE:-ghcr.io/sherpadvisorylab/playbook-agent:1.19.3}
+      # Turns at once on the whole machine, every company together.
+      MAX_PARALLEL: ${MAX_PARALLEL:-2}
     volumes:
       # The dispatcher starts the agent containers next to itself.
       - /var/run/docker.sock:/var/run/docker.sock
+      # One folder per company with its .env (scripts/runner-env.mjs); read again every half minute.
+      - /opt/playbook/companies:/companies:ro
       - dispatcher-data:/data
-    expose:
-      - "8080"
-    ports:
-      # Health and webhook on the machine only; the proxy publishes them.
-      - "127.0.0.1:${DISPATCHER_PORT:-8080}:8080"
 
   # Built here, never started by compose: the dispatcher runs it once per turn (AGENT_IMAGE).
   agent:
     build: ./agent
-    image: ${AGENT_IMAGE:-playbook-agent:1.19.3}
+    image: ${AGENT_IMAGE:-ghcr.io/sherpadvisorylab/playbook-agent:1.19.3}
     profiles: ["build"]
 
+  # HTTPS on plain Docker; on Coolify leave it out and give the service dispatcher the domain.
   caddy:
     image: caddy:2.8.4
-    profiles: ["proxy"]
     restart: unless-stopped
-    # DISPATCHER_DOMAIN in .env: the DNS name pointing to this machine.
-    command: caddy reverse-proxy --from ${DISPATCHER_DOMAIN:-} --to dispatcher:8080
+    command: caddy reverse-proxy --from ${RUNNER_DOMAIN:-} --to dispatcher:8080
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - caddy-data:/data
-    depends_on:
-      - dispatcher
+    profiles: ["proxy"]
 
 volumes:
   dispatcher-data:
