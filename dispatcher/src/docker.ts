@@ -9,6 +9,8 @@ export interface TurnSpec {
     env: Record<string, string>;
     /** Seconds; the agent stops itself at PLAYBOOK_TIMEOUT, this is the hard stop a bit later. */
     timeout: number;
+    /** Each piece of output, as it comes. */
+    onOutput?: (chunk: string) => void;
 }
 
 export interface TurnResult {
@@ -31,12 +33,14 @@ export interface DockerOptions {
     docker?: string;
 }
 
-function docker(command: string, args: string[], env: NodeJS.ProcessEnv = process.env): Promise<TurnResult> {
+function docker(command: string, args: string[], env: NodeJS.ProcessEnv = process.env, onOutput?: (chunk: string) => void): Promise<TurnResult> {
     return new Promise((resolve) => {
         const child = spawn(command, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
         let output = '';
         const keep = (chunk: Buffer) => {
-            output = (output + chunk.toString('utf8')).slice(-KEEP_OUTPUT);
+            const text = chunk.toString('utf8');
+            output = (output + text).slice(-KEEP_OUTPUT);
+            onOutput?.(text);
         };
         child.stdout.on('data', keep);
         child.stderr.on('data', keep);
@@ -59,7 +63,7 @@ export function dockerRunner(options: DockerOptions): { runTurn: RunTurn; cleanU
             const env = { PATH: process.env.PATH, DOCKER_HOST: process.env.DOCKER_HOST, ...spec.env };
             const stop = setTimeout(() => void docker(command, ['kill', spec.name]), (spec.timeout + 120) * 1000);
             try {
-                return await docker(command, args, env);
+                return await docker(command, args, env, spec.onOutput);
             } finally {
                 clearTimeout(stop);
             }

@@ -82,6 +82,7 @@ function main() {
     const github = createGitHub({ appId: config.appId, privateKey: config.privateKey, installationId: config.installationId });
     const docker = dockerRunner({ image: config.image, memory: config.memory, network: config.network });
     const dispatcher = new Dispatcher({
+        mask,
         github,
         runTurn: docker.runTurn,
         failures: fileFailures(join(config.dataDir, 'failures.json')),
@@ -108,10 +109,17 @@ function main() {
                 const { running, queued, lastReconcile } = dispatcher.state;
                 return send(response, 200, { ok: true, running: running.length, queued: queued.length, lastReconcile });
             }
-            if (request.method === 'GET' && (request.url === '/state' || request.url === '/events')) {
+            const path = new URL(request.url ?? '/', 'http://dispatcher').pathname;
+            if (request.method === 'GET' && (path === '/state' || path === '/events' || path === '/output')) {
                 if (!config.studioToken) return send(response, 404, { error: 'studio access not configured' });
                 if (!fromStudio(config, request)) return send(response, 401, { error: 'bad token' });
-                if (request.url === '/state') return send(response, 200, dispatcher.state);
+                if (path === '/state') return send(response, 200, dispatcher.state);
+                // The output of the turn of one issue: /output?repository=owner/name&issue=12
+                if (path === '/output') {
+                    const query = new URL(request.url ?? '/', 'http://dispatcher').searchParams;
+                    const output = dispatcher.outputOf(query.get('repository') ?? '', Number(query.get('issue')));
+                    return output ? send(response, 200, output) : send(response, 404, { error: 'no turn' });
+                }
                 // Server-Sent Events: the state first, then every event; a comment keeps proxies from closing it.
                 response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
                 const write = (event: string, data: unknown) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -119,7 +127,7 @@ function main() {
                 const stop = dispatcher.onEvent((event) => {
                     write(event.type, event);
                     // Each change of what runs or waits comes with the state after it.
-                    if (event.type !== 'issue') write('state', dispatcher.state);
+                    if (event.type !== 'issue' && event.type !== 'turn-output') write('state', dispatcher.state);
                 });
                 const keepAlive = setInterval(() => response.write(': keep-alive\n\n'), 25_000);
                 request.on('close', () => {

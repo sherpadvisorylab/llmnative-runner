@@ -1,6 +1,7 @@
 import type { GitHubApi } from './github.ts';
 import type { RunTurn } from './docker.ts';
 import { readWorkflow, workOf, type Workflow } from './workflow.ts';
+import { OutputBuffer } from './output.ts';
 
 // The dispatcher: an issue whose `needs:` label is an agent of the workflow of its repository gets a
 // turn of that agent, one container. One turn per issue at a time, at most `maxParallel` at once,
@@ -47,7 +48,11 @@ export type LiveEvent =
     | { type: 'turn-started'; at: string; repository: string; issue: number; agent: string }
     | { type: 'turn-ended'; at: string; repository: string; issue: number; agent: string; code: number; seconds: number; moved: boolean }
     | { type: 'handed'; at: string; repository: string; issue: number; agent: string; failures: number }
-    | { type: 'issue'; at: string; repository: string; issue?: number; action: string };
+    | { type: 'issue'; at: string; repository: string; issue?: number; action: string }
+    | { type: 'turn-output'; at: string; repository: string; issue: number; agent: string; lines: string[] };
+
+/** What a turn printed so far, cleaned and masked: while it runs, and after it ended until the next one. */
+export type TurnOutput = { repository: string; issue: number; agent: string; startedAt: string; lines: string[]; ended?: { code: number; seconds: number; moved: boolean } };
 
 /** A turn that ran, kept for the studio: the last ones only. */
 export type TurnRecord = { repository: string; issue: number; agent: string; startedAt: string; seconds: number; code: number; moved: boolean };
@@ -55,6 +60,10 @@ export type TurnRecord = { repository: string; issue: number; agent: string; sta
 type Running = { repository: string; issue: number; agent: string; startedAt?: string };
 
 const RECENT_TURNS = 100;
+/** Outputs kept for the studio: the turns running, and the last ones that ended. */
+const KEPT_OUTPUTS = 30;
+/** How often new lines go out together, in ms. */
+const OUTPUT_EVERY = 500;
 
 const PRIORITY: Record<string, number> = { high: 0, normal: 1, low: 2 };
 const MARKER = (data: object) => `<!-- playbook ${JSON.stringify(data)} -->`;
@@ -64,6 +73,8 @@ export class Dispatcher {
     private readonly running = new Map<string, Running>();
     private readonly listeners = new Set<(event: LiveEvent) => void>();
     private readonly turns: TurnRecord[] = [];
+    private readonly outputs = new Map<string, { record: Omit<TurnOutput, 'lines'>; buffer: OutputBuffer }>();
+    private readonly mask: (text: string) => string;
     private readonly queued = new Map<string, Candidate>();
     private readonly workflows = new Map<string, { at: number; workflow: Workflow | null }>();
     private readonly github: GitHubApi;
@@ -77,7 +88,8 @@ export class Dispatcher {
     private idle: Array<() => void> = [];
     lastReconcile?: string;
 
-    constructor(deps: { github: GitHubApi; runTurn: RunTurn; failures: FailureStore; options: DispatcherOptions; log: Log; turnLog: TurnLog; now?: () => number }) {
+    constructor(deps: { github: GitHubApi; runTurn: RunTurn; failures: FailureStore; options: DispatcherOptions; log: Log; turnLog: TurnLog; now?: () => number; mask?: (text: string) => string }) {
+        this.mask = deps.mask ?? ((text) => text);
         this.github = deps.github;
         this.runTurn = deps.runTurn;
         this.failures = deps.failures;
@@ -112,6 +124,42 @@ export class Dispatcher {
                 // A listener that fails never stops the dispatcher.
             }
         }
+    }
+
+    /** What the turn of an issue printed: the running one, or the last one. */
+    outputOf(repository: string, issue: number): TurnOutput | null {
+        const kept = this.outputs.get(issueKey(repository, issue));
+        return kept ? { ...kept.record, lines: kept.buffer.tail } : null;
+    }
+
+    /** Collects the output of a turn and sends its new lines every half second. */
+    private follow(repository: string, issue: number, agent: string, startedAt: string) {
+        const key = issueKey(repository, issue);
+        const buffer = new OutputBuffer();
+        const kept = { record: { repository, issue, agent, startedAt } as Omit<TurnOutput, 'lines'>, buffer };
+        this.outputs.delete(key);
+        this.outputs.set(key, kept);
+        while (this.outputs.size > KEPT_OUTPUTS) this.outputs.delete(this.outputs.keys().next().value!);
+        let pending: string[] = [];
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const flush = () => {
+            timer = undefined;
+            if (!pending.length) return;
+            const lines = pending;
+            pending = [];
+            this.announce({ type: 'turn-output', at: this.at(), repository, issue, agent, lines });
+        };
+        return {
+            onOutput: (chunk: string) => {
+                pending.push(...buffer.add(this.mask(chunk)).map((line) => this.mask(line)));
+                if (!timer) timer = setTimeout(flush, OUTPUT_EVERY);
+            },
+            end: (ended: { code: number; seconds: number; moved: boolean }) => {
+                clearTimeout(timer);
+                flush();
+                kept.record = { ...kept.record, ended };
+            },
+        };
     }
 
     private at(): string {
@@ -211,7 +259,9 @@ export class Dispatcher {
             this.running.set(key, { repository, issue: number, agent, startedAt: this.at() });
             this.log('turn started', { issue: key, agent });
             this.announce({ type: 'turn-started', at: this.at(), repository, issue: number, agent });
+            const output = this.follow(repository, number, agent, new Date(started).toISOString());
             const result = await this.runTurn({
+                onOutput: output.onOutput,
                 name: `playbook-${repository.replace(/[^A-Za-z0-9_.-]/g, '-')}-${number}`,
                 timeout: this.options.turnTimeout,
                 env: {
@@ -229,6 +279,7 @@ export class Dispatcher {
             const after = await this.github.request<Issue>('GET', `/repos/${repository}/issues/${number}`);
             const moved = after.state !== 'open' || workOf(workflow, after.labels).needs !== agent;
             this.log('turn ended', { issue: key, agent, code: result.code, seconds, moved });
+            output.end({ code: result.code, seconds, moved });
             this.turns.unshift({ repository, issue: number, agent, startedAt: new Date(started).toISOString(), seconds, code: result.code, moved });
             this.turns.splice(RECENT_TURNS);
             this.announce({ type: 'turn-ended', at: this.at(), repository, issue: number, agent, code: result.code, seconds, moved });
