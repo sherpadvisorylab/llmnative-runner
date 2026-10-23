@@ -80,7 +80,7 @@ function main() {
     const log: Log = (line, details) => console.log(mask(JSON.stringify({ at: new Date().toISOString(), msg: line, ...details })));
 
     const github = createGitHub({ appId: config.appId, privateKey: config.privateKey, installationId: config.installationId });
-    const docker = dockerRunner({ image: config.image, memory: config.memory, network: config.network });
+    const docker = dockerRunner({ image: config.image, memory: config.memory, network: config.network, owner: `app-${config.appId}` });
     const dispatcher = new Dispatcher({
         mask,
         github,

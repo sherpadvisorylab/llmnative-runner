@@ -31,6 +31,11 @@ export interface DockerOptions {
     /** `--network` of each turn. */
     network?: string;
     docker?: string;
+    /**
+     * Whose turns these are (the App of the company): several dispatchers can share a machine, and a
+     * dispatcher that starts again only clears its own.
+     */
+    owner: string;
 }
 
 function docker(command: string, args: string[], env: NodeJS.ProcessEnv = process.env, onOutput?: (chunk: string) => void): Promise<TurnResult> {
@@ -54,7 +59,7 @@ export function dockerRunner(options: DockerOptions): { runTurn: RunTurn; cleanU
     return {
         async runTurn(spec) {
             const args = [
-                'run', '--rm', '--name', spec.name, '--label', `${TURN_LABEL}=1`,
+                'run', '--rm', '--name', spec.name, '--label', `${TURN_LABEL}=${options.owner}`,
                 ...(options.memory ? ['--memory', options.memory] : []),
                 ...(options.network ? ['--network', options.network] : []),
                 ...Object.keys(spec.env).flatMap((name) => ['-e', name]),
@@ -70,7 +75,7 @@ export function dockerRunner(options: DockerOptions): { runTurn: RunTurn; cleanU
         },
         /** Turns left running by a dispatcher that stopped: they are started again by the reconciliation. */
         async cleanUp() {
-            const listed = await docker(command, ['ps', '-aq', '--filter', `label=${TURN_LABEL}`]);
+            const listed = await docker(command, ['ps', '-aq', '--filter', `label=${TURN_LABEL}=${options.owner}`]);
             const ids = listed.output.split(/\s+/).filter(Boolean);
             if (listed.code === 0 && ids.length) await docker(command, ['rm', '-f', ...ids]);
         },
