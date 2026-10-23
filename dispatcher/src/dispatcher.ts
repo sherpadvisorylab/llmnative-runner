@@ -41,12 +41,29 @@ type Issue = {
 
 type Candidate = { repository: string; number: number; agent: string; priority: number; created: number };
 
+/** What happens, as it happens: for the studio, through `/events`. */
+export type LiveEvent =
+    | { type: 'queued'; at: string; repository: string; issue: number; agent: string }
+    | { type: 'turn-started'; at: string; repository: string; issue: number; agent: string }
+    | { type: 'turn-ended'; at: string; repository: string; issue: number; agent: string; code: number; seconds: number; moved: boolean }
+    | { type: 'handed'; at: string; repository: string; issue: number; agent: string; failures: number }
+    | { type: 'issue'; at: string; repository: string; issue?: number; action: string };
+
+/** A turn that ran, kept for the studio: the last ones only. */
+export type TurnRecord = { repository: string; issue: number; agent: string; startedAt: string; seconds: number; code: number; moved: boolean };
+
+type Running = { repository: string; issue: number; agent: string; startedAt?: string };
+
+const RECENT_TURNS = 100;
+
 const PRIORITY: Record<string, number> = { high: 0, normal: 1, low: 2 };
 const MARKER = (data: object) => `<!-- playbook ${JSON.stringify(data)} -->`;
 export const issueKey = (repository: string, number: number) => `${repository}#${number}`;
 
 export class Dispatcher {
-    private readonly running = new Set<string>();
+    private readonly running = new Map<string, Running>();
+    private readonly listeners = new Set<(event: LiveEvent) => void>();
+    private readonly turns: TurnRecord[] = [];
     private readonly queued = new Map<string, Candidate>();
     private readonly workflows = new Map<string, { at: number; workflow: Workflow | null }>();
     private readonly github: GitHubApi;
@@ -70,8 +87,35 @@ export class Dispatcher {
         this.now = deps.now ?? (() => Date.now());
     }
 
+    /** Turns running and waiting, and the last turns: what the studio shows as it is now. */
     get state() {
-        return { running: [...this.running], queued: [...this.queued.keys()], lastReconcile: this.lastReconcile };
+        return {
+            running: [...this.running.values()],
+            queued: [...this.queued.values()].map(({ repository, number, agent, priority }) => ({ repository, issue: number, agent, priority })),
+            turns: [...this.turns],
+            lastReconcile: this.lastReconcile,
+        };
+    }
+
+    /** Listens to what happens; returns how to stop. */
+    onEvent(listener: (event: LiveEvent) => void): () => void {
+        this.listeners.add(listener);
+        return () => void this.listeners.delete(listener);
+    }
+
+    /** Tells the listeners; an event from outside (the webhook) goes through here too. */
+    announce(event: LiveEvent): void {
+        for (const listener of this.listeners) {
+            try {
+                listener(event);
+            } catch {
+                // A listener that fails never stops the dispatcher.
+            }
+        }
+    }
+
+    private at(): string {
+        return new Date(this.now()).toISOString();
     }
 
     /** The workflow of a repository, read again after a while or when asked to. */
@@ -93,6 +137,7 @@ export class Dispatcher {
                 this.queued.delete(key);
                 return;
             }
+            if (!this.queued.has(key)) this.announce({ type: 'queued', at: this.at(), repository, issue: number, agent: candidate.agent });
             this.queued.set(key, candidate);
             this.pump();
         } catch (error) {
@@ -134,7 +179,7 @@ export class Dispatcher {
             const next = [...this.queued.values()].sort((a, b) => a.priority - b.priority || a.created - b.created)[0];
             const key = issueKey(next.repository, next.number);
             this.queued.delete(key);
-            this.running.add(key);
+            this.running.set(key, { repository: next.repository, issue: next.number, agent: next.agent });
             void this.turn(next).finally(() => {
                 this.running.delete(key);
                 // The labels it changed came while it ran: look at the issue again for the next agent.
@@ -163,7 +208,9 @@ export class Dispatcher {
             const settings = workflow.agents[agent];
             const token = await this.github.turnToken(repository, settings.permissions);
             const started = this.now();
+            this.running.set(key, { repository, issue: number, agent, startedAt: this.at() });
             this.log('turn started', { issue: key, agent });
+            this.announce({ type: 'turn-started', at: this.at(), repository, issue: number, agent });
             const result = await this.runTurn({
                 name: `playbook-${repository.replace(/[^A-Za-z0-9_.-]/g, '-')}-${number}`,
                 timeout: this.options.turnTimeout,
@@ -182,6 +229,9 @@ export class Dispatcher {
             const after = await this.github.request<Issue>('GET', `/repos/${repository}/issues/${number}`);
             const moved = after.state !== 'open' || workOf(workflow, after.labels).needs !== agent;
             this.log('turn ended', { issue: key, agent, code: result.code, seconds, moved });
+            this.turns.unshift({ repository, issue: number, agent, startedAt: new Date(started).toISOString(), seconds, code: result.code, moved });
+            this.turns.splice(RECENT_TURNS);
+            this.announce({ type: 'turn-ended', at: this.at(), repository, issue: number, agent, code: result.code, seconds, moved });
             if (moved) {
                 this.failures.set(key, 0);
                 return;
@@ -217,6 +267,7 @@ export class Dispatcher {
             body: `${MARKER({ event: 'limit', agent: 'dispatcher' })}\n**Dispatcher** → **Human** · ${workflow.statusPrefix}${workflow.blocked} · ${failures} turns of **${name}** failed in a row, the last because ${why}. A person looks at it, then hands it back with \`${workflow.needsPrefix}${agent}\`.\n\n\`\`\`\n${tail}\n\`\`\``,
         });
         this.log('issue handed to a person', { issue: key, agent, failures });
+        this.announce({ type: 'handed', at: this.at(), repository, issue: number, agent, failures });
     }
 
     /** Every open issue that needs an agent, in every repository of the installation. */

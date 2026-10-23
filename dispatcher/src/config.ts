@@ -26,6 +26,8 @@ export interface Config {
     privateKey: string;
     installationId?: number;
     webhookSecret?: string;
+    /** The token the studio of the company sends to read `/state` and `/events`. */
+    studioToken?: string;
     image: string;
     maxParallel: number;
     turnTimeout: number;
@@ -58,6 +60,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env, readFile = (pat
         privateKey,
         installationId: env.GITHUB_INSTALLATION_ID ? positive(env, 'GITHUB_INSTALLATION_ID', 0) : undefined,
         webhookSecret: env.GITHUB_WEBHOOK_SECRET || undefined,
+        studioToken: env.DISPATCHER_TOKEN || undefined,
         image: env.AGENT_IMAGE || 'ghcr.io/sherpadvisorylab/playbook-agent:1.19.3',
         maxParallel: positive(env, 'MAX_PARALLEL', 1),
         turnTimeout: positive(env, 'TURN_TIMEOUT', 3600),

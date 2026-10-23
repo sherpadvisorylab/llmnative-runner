@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ConfigError, readConfig, type Config } from './config.ts';
@@ -33,7 +34,7 @@ function fileFailures(path: string): FailureStore {
 
 /** Secrets never reach a log: every value of the turn environment and the key of the App are masked. */
 function masker(config: Config) {
-    const secrets = [...Object.values(config.agentEnv), config.webhookSecret ?? ''].filter((value) => value.length >= 8);
+    const secrets = [...Object.values(config.agentEnv), config.webhookSecret ?? '', config.studioToken ?? ''].filter((value) => value.length >= 8);
     return (text: string) => secrets.reduce((all, secret) => all.split(secret).join('***'), text)
         // Installation tokens of the turns.
         .replace(/gh[suo]_[A-Za-z0-9]{20,}/g, '***');
@@ -53,6 +54,13 @@ function readBody(request: IncomingMessage): Promise<string> {
         request.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
         request.on('error', reject);
     });
+}
+
+/** The studio of the company, by its token: `Authorization: Bearer <DISPATCHER_TOKEN>`. */
+function fromStudio(config: Config, request: IncomingMessage): boolean {
+    const given = Buffer.from(String(request.headers.authorization ?? '').replace(/^Bearer\s+/i, ''));
+    const expected = Buffer.from(config.studioToken ?? '');
+    return expected.length > 0 && given.length === expected.length && timingSafeEqual(given, expected);
 }
 
 function main() {
@@ -95,7 +103,31 @@ function main() {
 
     const server = createServer(async (request, response) => {
         try {
-            if (request.method === 'GET' && request.url === '/health') return send(response, 200, { ok: true, ...dispatcher.state });
+            // Public: alive or not, and how busy; which repositories and issues only for the studio.
+            if (request.method === 'GET' && request.url === '/health') {
+                const { running, queued, lastReconcile } = dispatcher.state;
+                return send(response, 200, { ok: true, running: running.length, queued: queued.length, lastReconcile });
+            }
+            if (request.method === 'GET' && (request.url === '/state' || request.url === '/events')) {
+                if (!config.studioToken) return send(response, 404, { error: 'studio access not configured' });
+                if (!fromStudio(config, request)) return send(response, 401, { error: 'bad token' });
+                if (request.url === '/state') return send(response, 200, dispatcher.state);
+                // Server-Sent Events: the state first, then every event; a comment keeps proxies from closing it.
+                response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+                const write = (event: string, data: unknown) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+                write('state', dispatcher.state);
+                const stop = dispatcher.onEvent((event) => {
+                    write(event.type, event);
+                    // Each change of what runs or waits comes with the state after it.
+                    if (event.type !== 'issue') write('state', dispatcher.state);
+                });
+                const keepAlive = setInterval(() => response.write(': keep-alive\n\n'), 25_000);
+                request.on('close', () => {
+                    clearInterval(keepAlive);
+                    stop();
+                });
+                return;
+            }
             if (request.method === 'POST' && request.url === '/webhook') {
                 if (!config.webhookSecret) return send(response, 404, { error: 'webhook not configured' });
                 const body = await readBody(request);
@@ -104,6 +136,7 @@ function main() {
                 const action = actionOf(request.headers['x-github-event'] as string | undefined, JSON.parse(body));
                 // GitHub waits ten seconds at most: answer first, work after.
                 send(response, 202, { accepted: action.kind });
+                dispatcher.announce({ type: 'issue', at: new Date().toISOString(), repository: action.kind === 'none' ? '' : action.repository, ...(action.kind === 'issue' ? { issue: action.number } : {}), action: request.headers['x-github-event'] as string ?? '' });
                 if (action.kind === 'issue') void dispatcher.consider(action.repository, action.number, true);
                 if (action.kind === 'repository') void dispatcher.reconcileRepository(action.repository);
                 return;
@@ -116,7 +149,7 @@ function main() {
     });
 
     server.listen(config.port, async () => {
-        log('dispatcher listening', { port: config.port, image: config.image, maxParallel: config.maxParallel, webhook: !!config.webhookSecret, agentEnv: Object.keys(config.agentEnv) });
+        log('dispatcher listening', { port: config.port, image: config.image, maxParallel: config.maxParallel, webhook: !!config.webhookSecret, studio: !!config.studioToken, agentEnv: Object.keys(config.agentEnv) });
         await docker.cleanUp();
         await dispatcher.reconcile();
         setInterval(() => void dispatcher.reconcile(), config.reconcileMinutes * 60_000).unref();
