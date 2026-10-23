@@ -1,0 +1,21 @@
+# The runner of one company as a Coolify resource ("Docker Compose Empty"): the images from GHCR, the
+# settings from a .env on the machine (kept out of Coolify and of the repository), the domain from
+# Coolify on port 8080 of `dispatcher`. See docs/runner-setup.md §6.3.
+services:
+  dispatcher:
+    image: ghcr.io/sherpadvisorylab/playbook-dispatcher:latest
+    restart: unless-stopped
+    env_file:
+      - /opt/playbook/runner/.env
+    environment:
+      DATA_DIR: /data
+      PORT: "8080"
+    volumes:
+      # The dispatcher starts the agent containers next to itself.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - playbook-dispatcher-data:/data
+    expose:
+      - "8080"
+
+volumes:
+  playbook-dispatcher-data:
