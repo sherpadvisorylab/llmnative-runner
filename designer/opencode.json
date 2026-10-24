@@ -6,6 +6,6 @@
     "edit": "allow",
     "bash": "allow",
     "webfetch": "allow",
-    "external_directory": "deny"
+    "external_directory": "allow"
   }
 }
