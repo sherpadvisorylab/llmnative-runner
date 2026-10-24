@@ -38,7 +38,7 @@ USER agent
 WORKDIR /work
 ENV HOME=/home/agent
 EXPOSE 4096
-LABEL org.opencontainers.image.title="playbook-designer" \
+LABEL org.opencontainers.image.title="playbook-design-matt" \
       org.opencontainers.image.description="The design agent of Playbook: an interactive opencode session with the design skills of mattpocock/skills" \
       playbook.design.kit="matt" \
       playbook.design.name="Matt Pocock" \

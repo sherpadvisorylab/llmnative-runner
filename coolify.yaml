@@ -10,7 +10,7 @@ services:
       PORT: "8080"
       AGENT_IMAGE: ghcr.io/sherpadvisorylab/playbook-agent:1.19.3
       MAX_PARALLEL: "1"
-      DESIGN_IMAGE: ghcr.io/sherpadvisorylab/playbook-designer:latest
+      DESIGN_IMAGES: "ghcr.io/sherpadvisorylab/playbook-design-matt:latest ghcr.io/sherpadvisorylab/playbook-design-bmad:latest"
       DESIGN_MAX_SESSIONS: "2"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
