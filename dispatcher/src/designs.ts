@@ -39,6 +39,8 @@ interface DesignRecord {
     password: string;
     address?: string;
     session?: string;
+    /** The first message has run the skill: the next ones are plain messages. */
+    opened?: boolean;
     pullRequest?: { number: number; url: string; branch: string };
     error?: string;
 }
@@ -173,16 +175,8 @@ export class DesignSessions {
             record.status = 'active';
             this.save();
             this.options.log('design started', { design: id, repository });
-            // The first round takes a while: it goes on in the background, the studio follows the events.
-            // opencode answers this call when the round is over: a wait longer than fetch allows for
-            // the headers is no failure, the round goes on and its events arrive.
-            void this.call(record, 'POST', `/session/${record.session}/command`, {
-                command: this.options.command ?? 'grill-with-docs',
-                arguments: topic,
-                ...(model ? { model } : {}),
-            }, { timeout: 0 }).catch((error: Error & { cause?: { code?: string } }) => {
-                if (error.cause?.code !== 'UND_ERR_HEADERS_TIMEOUT') this.emit(id, { type: 'error', message: error.message });
-            });
+            // The first round starts with the first message (send): the studio follows the events
+            // before it, so nothing of the reply is missed.
             return view(record);
         } catch (error) {
             record.status = 'failed';
@@ -196,12 +190,29 @@ export class DesignSessions {
         }
     }
 
-    /** A message of the person; a paused session wakes up first. */
+    /**
+     * A message of the person; a paused session wakes up first. The first one runs the skill with
+     * the message as its argument (usually the topic), the next ones are plain messages.
+     */
     async send(id: string, input: { text?: unknown }): Promise<void> {
         const text = String(input.text ?? '').trim();
         if (!text) throw new DesignError('text is required', 400);
         const record = await this.awake(id);
         record.lastActive = new Date(this.now()).toISOString();
+        if (!record.opened) {
+            record.opened = true;
+            this.save();
+            // opencode answers this call when the round is over: a wait longer than fetch allows for
+            // the headers is no failure, the round goes on and its events arrive.
+            void this.call(record, 'POST', `/session/${record.session}/command`, {
+                command: this.options.command ?? 'grill-with-docs',
+                arguments: text,
+                ...(record.model ? { model: record.model } : {}),
+            }, { timeout: 0 }).catch((error: Error & { cause?: { code?: string } }) => {
+                if (error.cause?.code !== 'UND_ERR_HEADERS_TIMEOUT') this.emit(id, { type: 'error', message: error.message });
+            });
+            return;
+        }
         this.save();
         await this.call(record, 'POST', `/session/${record.session}/prompt_async`, {
             parts: [{ type: 'text', text }],
