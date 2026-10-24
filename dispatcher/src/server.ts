@@ -50,7 +50,7 @@ export function routeOf(path: string, legacy?: string): { company?: string; rest
     return { company: legacy, rest: path };
 }
 
-export function createRunnerServer(tenants: Tenants, options: { legacy?: string; log: (line: string, details?: Record<string, unknown>) => void; design?: DesignKit }) {
+export function createRunnerServer(tenants: Tenants, options: { legacy?: string; log: (line: string, details?: Record<string, unknown>) => void; designs?: DesignKit[] }) {
     return createServer(async (request, response) => {
         try {
             const url = new URL(request.url ?? '/', 'http://runner');
@@ -64,7 +64,8 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                     // The services of the runner: what the studio shows on its page (no secret here).
                     services: {
                         dispatcher: true,
-                        design: options.design ? { kit: options.design.kit, name: options.design.name, command: options.design.command, skills: options.design.skills, source: options.design.source, commit: options.design.commit, opencode: options.design.opencode } : null,
+                        // Every design agent of the runner, one per kit.
+                        designs: (options.designs ?? []).map(({ kit, name, command, skills, source, commit, opencode }) => ({ kit, name, command, skills, source, commit, opencode })),
                     },
                 });
             }

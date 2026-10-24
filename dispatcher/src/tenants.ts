@@ -57,8 +57,8 @@ export interface TenantDeps {
     designHost: (config: CompanyConfig) => DesignHost;
     /** Design sessions at once on the machine, every company together. */
     designSlots: DesignSlots;
-    /** The skill a design session starts with (the command of the kit); none: no design agent here. */
-    designCommand?: string;
+    /** The design agents of the runner by kit (image and start command); empty: no design sessions here. */
+    designKits?: Record<string, { image: string; command: string }>;
     /** For tests; by default GitHub itself. */
     github?: (config: CompanyConfig) => GitHubApi;
     /** For tests; by default the real fetch. */
@@ -95,7 +95,7 @@ export function createTenant(config: CompanyConfig, version: string, deps: Tenan
         log,
         idleMinutes: deps.machine.design.idleMinutes,
         keepDays: deps.machine.design.keepDays,
-        command: deps.designCommand,
+        kits: deps.designKits ?? {},
         fetch: deps.fetch,
     });
     return { id: config.id, config, github, dispatcher, designs, deliveries: new Deliveries(), mask, log, version };

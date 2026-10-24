@@ -87,7 +87,6 @@ export function dockerRunner(options: DockerOptions): { runTurn: RunTurn; cleanU
 export const DESIGN_LABEL = 'playbook.design';
 
 export interface DesignHostOptions {
-    image: string;
     owner: string;
     memory?: string;
     /**
@@ -119,7 +118,7 @@ export function designHost(options: DesignHostOptions): DesignHost {
                 ...(options.memory ? ['--memory', options.memory] : []),
                 ...(options.network ? ['--network', options.network] : ['-p', '127.0.0.1::4096']),
                 ...Object.keys(spec.env).flatMap((name) => ['-e', name]),
-                options.image,
+                spec.image,
             ], { ...base, ...spec.env });
             return address(spec.name);
         },

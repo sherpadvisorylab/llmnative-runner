@@ -37,8 +37,8 @@ export interface MachineConfig {
     reconcileMinutes: number;
     memory?: string;
     network?: string;
-    /** The design sessions: the image (none: no design agent on this runner), how many at once on the machine, when they pause and go. */
-    design: { image: string; maxSessions: number; idleMinutes: number; keepDays: number; memory?: string; network?: string };
+    /** The design sessions: the images of the design agents, one per kit (none: no design agent on this runner), how many at once on the machine, when they pause and go. */
+    design: { images: string[]; maxSessions: number; idleMinutes: number; keepDays: number; memory?: string; network?: string };
 }
 
 export interface CompanyConfig {
@@ -88,8 +88,9 @@ export function readMachineConfig(env: Vars = process.env): MachineConfig {
         memory: env.AGENT_MEMORY || undefined,
         network: env.AGENT_NETWORK || undefined,
         design: {
-            // A runner has the design agent only when its compose names the image of a kit.
-            image: env.DESIGN_IMAGE || '',
+            // The design agents of the runner, one image per kit (DESIGN_IMAGES, space or comma
+            // separated; DESIGN_IMAGE for one, as before). None: no design sessions here.
+            images: [...new Set(`${env.DESIGN_IMAGES ?? ''} ${env.DESIGN_IMAGE ?? ''}`.split(/[\s,]+/).filter(Boolean))],
             maxSessions: positive(env, 'DESIGN_MAX_SESSIONS', 2),
             idleMinutes: positive(env, 'DESIGN_IDLE_MINUTES', 30),
             keepDays: positive(env, 'DESIGN_KEEP_DAYS', 7),

@@ -12,7 +12,7 @@ import type { Log } from './dispatcher.ts';
 /** What the dispatcher needs of Docker for the sessions. */
 export interface DesignHost {
     /** Starts the container of a session; resolves with the address of its opencode. */
-    start(spec: { name: string; env: Record<string, string> }): Promise<string>;
+    start(spec: { name: string; image: string; env: Record<string, string> }): Promise<string>;
     /** Starts a stopped container again; resolves with its address. */
     wake(name: string): Promise<string>;
     pause(name: string): Promise<void>;
@@ -31,6 +31,8 @@ interface DesignRecord {
     id: string;
     repository: string;
     topic: string;
+    /** The kit of the session (its method): the image it runs and the skill it starts with. */
+    kit?: string;
     model?: string;
     status: DesignStatus;
     createdAt: string;
@@ -52,7 +54,7 @@ interface DesignRecord {
 }
 
 /** A session as the studio sees it: no container, no password. */
-export type DesignView = Pick<DesignRecord, 'id' | 'repository' | 'topic' | 'model' | 'status' | 'createdAt' | 'lastActive' | 'pullRequest' | 'error' | 'workSeconds'>;
+export type DesignView = Pick<DesignRecord, 'id' | 'repository' | 'topic' | 'kit' | 'model' | 'status' | 'createdAt' | 'lastActive' | 'pullRequest' | 'error' | 'workSeconds'>;
 
 /** A message of the conversation, for the studio. */
 export type DesignMessage = { id: string; role: 'user' | 'assistant'; text: string; tools: Array<{ tool: string; title: string }> };
@@ -104,8 +106,8 @@ export interface DesignOptions {
     idleMinutes: number;
     /** Days a paused session is kept before it is removed. */
     keepDays: number;
-    /** The skill the session starts with, the command of the kit; none: no design agent on this runner. */
-    command?: string;
+    /** The design agents of the runner by kit: the image and the skill a session starts with. None: no design sessions here. */
+    kits: Record<string, { image: string; command: string }>;
     fetch?: typeof fetch;
     now?: () => number;
     /** How long to wait for opencode to answer after a start, in ms. */
@@ -120,7 +122,7 @@ const LIVE: DesignStatus[] = ['starting', 'active', 'paused'];
 
 export const designSlug = (title: string) => title.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'design';
 
-const view = ({ id, repository, topic, model, status, createdAt, lastActive, pullRequest, error, workSeconds }: DesignRecord): DesignView => ({ id, repository, topic, model, status, createdAt, lastActive, workSeconds: Math.round(workSeconds ?? 0), ...(pullRequest ? { pullRequest } : {}), ...(error ? { error } : {}) });
+const view = ({ id, repository, topic, kit, model, status, createdAt, lastActive, pullRequest, error, workSeconds }: DesignRecord): DesignView => ({ id, repository, topic, ...(kit ? { kit } : {}), model, status, createdAt, lastActive, workSeconds: Math.round(workSeconds ?? 0), ...(pullRequest ? { pullRequest } : {}), ...(error ? { error } : {}) });
 
 export class DesignSessions {
     private readonly records = new Map<string, DesignRecord>();
@@ -153,11 +155,15 @@ export class DesignSessions {
     }
 
     /** Starts a session on a repository of the company, with what it is about; `id` may come from the studio (8 hex). */
-    async start(input: { id?: unknown; repository?: unknown; topic?: unknown; model?: unknown }): Promise<DesignView> {
+    async start(input: { id?: unknown; repository?: unknown; topic?: unknown; model?: unknown; kit?: unknown }): Promise<DesignView> {
         const repository = String(input.repository ?? '');
         const topic = String(input.topic ?? '').trim();
         const model = input.model ? String(input.model) : undefined;
-        if (!this.options.command) throw new DesignError('this runner has no design agent', 404);
+        const kits = Object.keys(this.options.kits);
+        if (!kits.length) throw new DesignError('this runner has no design agent', 404);
+        // The kit asked for, or the only one of the runner.
+        const kit = input.kit ? String(input.kit) : kits.length === 1 ? kits[0] : '';
+        if (!this.options.kits[kit]) throw new DesignError(`kit must be one of ${kits.join(', ')}`, 400);
         if (!REPOSITORY.test(repository)) throw new DesignError('repository must be owner/name', 400);
         if (!topic) throw new DesignError('topic is required', 400);
         if (model && !MODEL.test(model)) throw new DesignError('model must be provider/model', 400);
@@ -168,7 +174,7 @@ export class DesignSessions {
         if (!this.options.slots.take(`${this.options.company}/${id}`)) throw new DesignError('too many design sessions on this runner: try again later', 429);
         const at = new Date(this.now()).toISOString();
         const record: DesignRecord = {
-            id, repository, topic, model, status: 'starting', createdAt: at, lastActive: at,
+            id, repository, topic, kit, model, status: 'starting', createdAt: at, lastActive: at,
             container: `playbook-design-${this.options.company}-${id}`,
             password: randomBytes(24).toString('base64url'),
         };
@@ -179,6 +185,7 @@ export class DesignSessions {
             const token = await this.options.github.turnToken(repository, { contents: 'read', metadata: 'read' });
             record.address = await this.options.host.start({
                 name: record.container,
+                image: this.options.kits[kit].image,
                 env: { ...this.options.agentEnv, GITHUB_REPOSITORY: repository, GITHUB_TOKEN: token, OPENCODE_SERVER_PASSWORD: record.password },
             });
             await this.ready(record);
@@ -220,7 +227,7 @@ export class DesignSessions {
             // opencode answers this call when the round is over: a wait longer than fetch allows for
             // the headers is no failure, the round goes on and its events arrive.
             void this.call(record, 'POST', `/session/${record.session}/command`, {
-                command: this.options.command,
+                command: this.commandOf(record),
                 arguments: text,
                 ...(record.model ? { model: record.model } : {}),
             }, { timeout: 0 }).catch((error: Error & { cause?: { code?: string } }) => {
@@ -346,6 +353,13 @@ export class DesignSessions {
                 this.options.log('design removed after its days', { design: record.id });
             }
         }
+    }
+
+    /** The skill a session starts with: the command of its kit (a session made before kits: the only one). */
+    private commandOf(record: DesignRecord): string {
+        const kit = this.options.kits[record.kit ?? ''] ?? Object.values(this.options.kits)[0];
+        if (!kit) throw new DesignError('this runner has no design agent', 404);
+        return kit.command;
     }
 
     /** The time the agent works: from busy to idle, added to the session. */
