@@ -5,6 +5,7 @@ import { Dispatcher, type FailureStore, type Log } from './dispatcher.ts';
 import type { RunTurn } from './docker.ts';
 import { createGitHub, type GitHubApi } from './github.ts';
 import { Deliveries } from './webhook.ts';
+import { DesignSessions, type DesignHost, type DesignSlots } from './designs.ts';
 
 // The companies of a runner. Each one is a world of its own inside the dispatcher: its GitHub App,
 // its queue, its failures, its logs, its secrets masked in them. Nothing of a company reaches another.
@@ -14,6 +15,8 @@ export interface Tenant {
     config: CompanyConfig;
     github: GitHubApi;
     dispatcher: Dispatcher;
+    /** Its design sessions. */
+    designs: DesignSessions;
     deliveries: Deliveries;
     mask: (text: string) => string;
     log: Log;
@@ -50,8 +53,14 @@ export interface TenantDeps {
     machine: MachineConfig;
     /** Runs a turn of this company: the image, on the machine, within the limit of the machine. */
     runTurn: (config: CompanyConfig) => RunTurn;
+    /** The containers of the design sessions of this company. */
+    designHost: (config: CompanyConfig) => DesignHost;
+    /** Design sessions at once on the machine, every company together. */
+    designSlots: DesignSlots;
     /** For tests; by default GitHub itself. */
     github?: (config: CompanyConfig) => GitHubApi;
+    /** For tests; by default the real fetch. */
+    fetch?: typeof fetch;
 }
 
 export function createTenant(config: CompanyConfig, version: string, deps: TenantDeps): Tenant {
@@ -74,7 +83,19 @@ export function createTenant(config: CompanyConfig, version: string, deps: Tenan
             },
         },
     });
-    return { id: config.id, config, github, dispatcher, deliveries: new Deliveries(), mask, log, version };
+    const designs = new DesignSessions({
+        company: config.id,
+        github,
+        host: deps.designHost(config),
+        slots: deps.designSlots,
+        file: join(dir, 'designs.json'),
+        agentEnv: config.agentEnv,
+        log,
+        idleMinutes: deps.machine.design.idleMinutes,
+        keepDays: deps.machine.design.keepDays,
+        fetch: deps.fetch,
+    });
+    return { id: config.id, config, github, dispatcher, designs, deliveries: new Deliveries(), mask, log, version };
 }
 
 /** The .env of each company in the folder, with when it changed: `<dir>/<company>/.env`. */

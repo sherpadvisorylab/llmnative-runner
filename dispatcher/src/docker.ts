@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import type { DesignFile, DesignHost } from './designs.ts';
 
 // One turn is one container of the agent image, run next to the dispatcher through the Docker socket.
 // Values go through the environment of the docker command (`-e NAME`), never on its command line.
@@ -74,10 +75,73 @@ export function dockerRunner(options: DockerOptions): { runTurn: RunTurn; cleanU
             }
         },
         /** Turns left running by a dispatcher that stopped: they are started again by the reconciliation. */
+        // (Design sessions carry another label and survive a restart: see designHost.)
         async cleanUp() {
             const listed = await docker(command, ['ps', '-aq', '--filter', `label=${TURN_LABEL}=${options.owner}`]);
             const ids = listed.output.split(/\s+/).filter(Boolean);
             if (listed.code === 0 && ids.length) await docker(command, ['rm', '-f', ...ids]);
         },
     };
+}
+
+export const DESIGN_LABEL = 'playbook.design';
+
+export interface DesignHostOptions {
+    image: string;
+    owner: string;
+    memory?: string;
+    /**
+     * The network the dispatcher is on: the session joins it and answers at http://<name>:4096. Without
+     * one (a dispatcher outside Docker) its port is published on 127.0.0.1 only.
+     */
+    network?: string;
+    docker?: string;
+}
+
+/** The containers of the design sessions: started detached, stopped when idle, removed at the end. */
+export function designHost(options: DesignHostOptions): DesignHost {
+    const command = options.docker ?? 'docker';
+    const base = { PATH: process.env.PATH, DOCKER_HOST: process.env.DOCKER_HOST };
+    const must = async (args: string[], env: NodeJS.ProcessEnv = base) => {
+        const result = await docker(command, args, env);
+        if (result.code !== 0) throw new Error(`docker ${args[0]} failed: ${result.output.trim().split('\n').pop()}`);
+        return result.output;
+    };
+    const address = async (name: string) => {
+        if (options.network) return `http://${name}:4096`;
+        const port = (await must(['port', name, '4096/tcp'])).trim().split('\n')[0];
+        return `http://${port.replace('0.0.0.0', '127.0.0.1')}`;
+    };
+    return {
+        async start(spec) {
+            await must([
+                'run', '-d', '--name', spec.name, '--label', `${DESIGN_LABEL}=${options.owner}`,
+                ...(options.memory ? ['--memory', options.memory] : []),
+                ...(options.network ? ['--network', options.network] : ['-p', '127.0.0.1::4096']),
+                ...Object.keys(spec.env).flatMap((name) => ['-e', name]),
+                options.image,
+            ], { ...base, ...spec.env });
+            return address(spec.name);
+        },
+        async wake(name) {
+            await must(['start', name]);
+            return address(name);
+        },
+        async pause(name) {
+            await must(['stop', '-t', '20', name]);
+        },
+        async remove(name) {
+            await must(['rm', '-f', name]);
+        },
+        async files(name) {
+            const output = await must(['exec', name, 'playbook-design-files']);
+            return (JSON.parse(output.slice(output.indexOf('{'))) as { files: DesignFile[] }).files;
+        },
+    };
+}
+
+/** The network of the container the dispatcher runs in, if it runs in one: the sessions join it. */
+export async function ownNetwork(hostname: string, command = 'docker'): Promise<string | undefined> {
+    const result = await docker(command, ['inspect', '--format', '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}', hostname]);
+    return result.code === 0 ? result.output.split('\n').map((line) => line.trim()).find(Boolean) : undefined;
 }

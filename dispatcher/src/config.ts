@@ -37,6 +37,8 @@ export interface MachineConfig {
     reconcileMinutes: number;
     memory?: string;
     network?: string;
+    /** The design sessions: the image, how many at once on the machine, when they pause and go. */
+    design: { image: string; maxSessions: number; idleMinutes: number; keepDays: number; memory?: string; network?: string };
 }
 
 export interface CompanyConfig {
@@ -85,6 +87,15 @@ export function readMachineConfig(env: Vars = process.env): MachineConfig {
         reconcileMinutes: positive(env, 'RECONCILE_MINUTES', 10),
         memory: env.AGENT_MEMORY || undefined,
         network: env.AGENT_NETWORK || undefined,
+        design: {
+            image: env.DESIGN_IMAGE || 'ghcr.io/sherpadvisorylab/playbook-designer:latest',
+            maxSessions: positive(env, 'DESIGN_MAX_SESSIONS', 2),
+            idleMinutes: positive(env, 'DESIGN_IDLE_MINUTES', 30),
+            keepDays: positive(env, 'DESIGN_KEEP_DAYS', 7),
+            memory: env.DESIGN_MEMORY || undefined,
+            // By default the network of the dispatcher container, found at start.
+            network: env.DESIGN_NETWORK || undefined,
+        },
     };
 }
 

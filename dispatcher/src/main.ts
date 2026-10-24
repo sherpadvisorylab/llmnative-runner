@@ -1,18 +1,23 @@
 import { ConfigError, readLegacyCompany, readMachineConfig, type CompanyConfig, type MachineConfig } from './config.ts';
-import { dockerRunner } from './docker.ts';
+import { designHost, dockerRunner, ownNetwork } from './docker.ts';
+import { designSlots } from './designs.ts';
+import { hostname } from 'node:os';
 import { createRunnerServer } from './server.ts';
 import { Tenants, machineLimit } from './tenants.ts';
 
 // The dispatcher of a runner: the companies of its folder (each with its own .env), their webhooks
 // and studios on PORT under their path, the reconciliation of each at start and every
-// RECONCILE_MINUTES, and the turns of every company within MAX_PARALLEL for the machine.
+// RECONCILE_MINUTES, and the turns of every company within MAX_PARALLEL for the machine. The design
+// sessions of the companies run next to it, within DESIGN_MAX_SESSIONS, paused when left alone.
 
 /** How often the folder of the companies is read again (a company added, changed or removed). */
 const SYNC_MS = 30_000;
+/** How often the design sessions left alone are paused. */
+const SWEEP_MS = 60_000;
 
 const log = (line: string, details?: Record<string, unknown>) => console.log(JSON.stringify({ at: new Date().toISOString(), msg: line, ...details }));
 
-function main() {
+async function main() {
     let machine: MachineConfig;
     let legacy: CompanyConfig | null;
     try {
@@ -27,6 +32,9 @@ function main() {
     }
 
     const limit = machineLimit(machine.maxParallel);
+    // The sessions join the network of the dispatcher, to be reached by name.
+    const network = machine.design.network ?? await ownNetwork(hostname());
+    const slots = designSlots(machine.design.maxSessions);
     const tenants = new Tenants({
         machine,
         // Each company its own runner of turns: its turns carry its App id, so a restart clears its own only.
@@ -34,6 +42,8 @@ function main() {
             const docker = dockerRunner({ image: machine.image, memory: machine.memory, network: machine.network, owner: `app-${config.appId}` });
             return (spec) => limit(() => docker.runTurn(spec));
         },
+        designHost: (config) => designHost({ image: machine.design.image, memory: machine.design.memory, network, owner: `app-${config.appId}` }),
+        designSlots: slots,
     }, legacy ? [legacy] : []);
 
     const start = async (fresh = false) => {
@@ -47,10 +57,11 @@ function main() {
 
     const server = createRunnerServer(tenants, { legacy: legacy?.id, log });
     server.listen(machine.port, async () => {
-        log('runner listening', { port: machine.port, image: machine.image, maxParallel: machine.maxParallel, companiesDir: machine.companiesDir });
+        log('runner listening', { port: machine.port, image: machine.image, maxParallel: machine.maxParallel, companiesDir: machine.companiesDir, designImage: machine.design.image, designNetwork: network ?? 'published on 127.0.0.1' });
         await start(true);
         setInterval(() => void start(), SYNC_MS).unref();
         setInterval(() => { for (const tenant of tenants.all()) void tenant.dispatcher.reconcile(); }, machine.reconcileMinutes * 60_000).unref();
+        setInterval(() => { for (const tenant of tenants.all()) void tenant.designs.sweep().catch((error: Error) => tenant.log('design sweep failed', { error: error.message })); }, SWEEP_MS).unref();
     });
 
     const stop = () => {
@@ -62,4 +73,4 @@ function main() {
     process.on('SIGINT', stop);
 }
 
-main();
+void main();

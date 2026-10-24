@@ -2,12 +2,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { timingSafeEqual } from 'node:crypto';
 import type { Tenant, Tenants } from './tenants.ts';
 import { actionOf, validSignature } from './webhook.ts';
+import { DesignError, type DesignEvent } from './designs.ts';
 
 // The HTTP side of the runner. Every route of a company lives under its path, `/<company>/…`, and is
 // served with that company only: its webhook secret, its studio token, its dispatcher.
 //   GET  /health                       public: alive, and how busy (numbers only)
 //   POST /<company>/webhook            the webhook of its GitHub App
 //   GET  /<company>/state|events|output for its studio, with its DISPATCHER_TOKEN
+//   /<company>/designs[/<id>[/messages|events|finish]]  its design sessions, for its studio too
 // A dispatcher started with one company in its environment also answers at the root, as before.
 
 const MAX_BODY = 5 * 1024 * 1024;
@@ -42,7 +44,7 @@ const send = (response: ServerResponse, status: number, body: unknown) => {
 
 /** The company of a path and what is asked of it: `/acme/webhook` → acme, `/webhook`. */
 export function routeOf(path: string, legacy?: string): { company?: string; rest: string } {
-    const match = /^\/([a-z0-9][a-z0-9-]{0,62})(\/[a-z]+)$/.exec(path);
+    const match = /^\/([a-z0-9][a-z0-9-]{0,62})(\/[a-z]+(?:\/[a-z0-9]+){0,2})$/.exec(path);
     if (match) return { company: match[1], rest: match[2] };
     return { company: legacy, rest: path };
 }
@@ -104,10 +106,49 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                 });
                 return;
             }
+            if (rest === '/designs' || rest.startsWith('/designs/')) {
+                if (!tenant.config.studioToken) return send(response, 404, { error: 'studio access not configured' });
+                if (!fromStudio(tenant, request)) return send(response, 401, { error: 'bad token' });
+                return await designs(tenant, request, response, rest.split('/').slice(2));
+            }
             send(response, 404, { error: 'not found' });
         } catch (error) {
+            if (error instanceof DesignError) return send(response, error.status, { error: error.message });
             options.log('request failed', { error: (error as Error).message });
             if (!response.headersSent) send(response, 400, { error: 'bad request' });
         }
     });
+}
+
+/** The design sessions of a company: list and start, then one session, its messages, events and end. */
+async function designs(tenant: Tenant, request: IncomingMessage, response: ServerResponse, [id, what]: string[]) {
+    const sessions = tenant.designs;
+    const json = async () => JSON.parse((await readBody(request)) || '{}') as Record<string, unknown>;
+    if (!id) {
+        if (request.method === 'GET') return send(response, 200, sessions.list());
+        if (request.method === 'POST') return send(response, 201, await sessions.start(await json()));
+    } else if (!what) {
+        if (request.method === 'GET') {
+            const design = sessions.get(id);
+            return design ? send(response, 200, { design, messages: await sessions.messages(id).catch(() => []) }) : send(response, 404, { error: 'not found' });
+        }
+        if (request.method === 'DELETE') return send(response, 200, await sessions.cancel(id));
+    } else if (what === 'messages' && request.method === 'POST') {
+        await sessions.send(id, await json());
+        return send(response, 202, { accepted: true });
+    } else if (what === 'finish' && request.method === 'POST') {
+        return send(response, 200, await sessions.finish(id, await json()));
+    } else if (what === 'events' && request.method === 'GET') {
+        if (!sessions.get(id)) return send(response, 404, { error: 'not found' });
+        response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+        // Its status first, then what opencode does.
+        const stop = sessions.follow(id, (event: DesignEvent) => response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`));
+        const keepAlive = setInterval(() => response.write(': keep-alive\n\n'), 25_000);
+        request.on('close', () => {
+            clearInterval(keepAlive);
+            stop();
+        });
+        return;
+    }
+    send(response, 404, { error: 'not found' });
 }

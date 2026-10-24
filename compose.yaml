@@ -1,5 +1,6 @@
 # A runner: one dispatcher for every company of /opt/playbook/companies (each with its own .env), the
-# agent image it starts one turn at a time and, on a machine without a reverse proxy, Caddy for HTTPS.
+# agent image it starts one turn at a time, the design image it starts for each design session and, on
+# a machine without a reverse proxy, Caddy for HTTPS.
 # The studio writes this same file, filled in, in the guide of each runner (Runners → the runner).
 #   RUNNER_DOMAIN=agents.example.com docker compose up -d
 name: playbook-runner
@@ -16,6 +17,9 @@ services:
       AGENT_IMAGE: ${AGENT_IMAGE:-ghcr.io/sherpadvisorylab/playbook-agent:1.19.3}
       # Turns at once on the whole machine, every company together.
       MAX_PARALLEL: ${MAX_PARALLEL:-2}
+      DESIGN_IMAGE: ${DESIGN_IMAGE:-ghcr.io/sherpadvisorylab/playbook-designer:latest}
+      # Design sessions at once on the whole machine (about 1 GB of RAM each while active).
+      DESIGN_MAX_SESSIONS: ${DESIGN_MAX_SESSIONS:-2}
     volumes:
       # The dispatcher starts the agent containers next to itself.
       - /var/run/docker.sock:/var/run/docker.sock
@@ -27,6 +31,12 @@ services:
   agent:
     build: ./agent
     image: ${AGENT_IMAGE:-ghcr.io/sherpadvisorylab/playbook-agent:1.19.3}
+    profiles: ["build"]
+
+  # Built here, never started by compose: the dispatcher runs it once per design session (DESIGN_IMAGE).
+  designer:
+    build: ./designer
+    image: ${DESIGN_IMAGE:-ghcr.io/sherpadvisorylab/playbook-designer:latest}
     profiles: ["build"]
 
   # HTTPS on plain Docker; on Coolify leave it out and give the service dispatcher the domain.
