@@ -132,7 +132,8 @@ async function designs(tenant: Tenant, request: IncomingMessage, response: Serve
             const design = sessions.get(id);
             return design ? send(response, 200, { design, messages: await sessions.messages(id).catch(() => []) }) : send(response, 404, { error: 'not found' });
         }
-        if (request.method === 'DELETE') return send(response, 200, await sessions.cancel(id));
+        // Deleting a session archives it: closed if it is live, off the lists, kept in the data.
+        if (request.method === 'DELETE') return send(response, 200, await sessions.archive(id));
     } else if (what === 'messages' && request.method === 'POST') {
         await sessions.send(id, await json());
         return send(response, 202, { accepted: true });

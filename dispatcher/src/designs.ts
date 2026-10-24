@@ -43,10 +43,16 @@ interface DesignRecord {
     opened?: boolean;
     pullRequest?: { number: number; url: string; branch: string };
     error?: string;
+    /** Taken off the lists by the person: kept in the data, never shown again. */
+    archived?: boolean;
+    /** Seconds the agent worked (busy), every turn together. */
+    workSeconds?: number;
+    /** When the turn running now started, while it runs. */
+    busySince?: string;
 }
 
 /** A session as the studio sees it: no container, no password. */
-export type DesignView = Pick<DesignRecord, 'id' | 'repository' | 'topic' | 'model' | 'status' | 'createdAt' | 'lastActive' | 'pullRequest' | 'error'>;
+export type DesignView = Pick<DesignRecord, 'id' | 'repository' | 'topic' | 'model' | 'status' | 'createdAt' | 'lastActive' | 'pullRequest' | 'error' | 'workSeconds'>;
 
 /** A message of the conversation, for the studio. */
 export type DesignMessage = { id: string; role: 'user' | 'assistant'; text: string; tools: Array<{ tool: string; title: string }> };
@@ -114,7 +120,7 @@ const LIVE: DesignStatus[] = ['starting', 'active', 'paused'];
 
 export const designSlug = (title: string) => title.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'design';
 
-const view = ({ id, repository, topic, model, status, createdAt, lastActive, pullRequest, error }: DesignRecord): DesignView => ({ id, repository, topic, model, status, createdAt, lastActive, ...(pullRequest ? { pullRequest } : {}), ...(error ? { error } : {}) });
+const view = ({ id, repository, topic, model, status, createdAt, lastActive, pullRequest, error, workSeconds }: DesignRecord): DesignView => ({ id, repository, topic, model, status, createdAt, lastActive, workSeconds: Math.round(workSeconds ?? 0), ...(pullRequest ? { pullRequest } : {}), ...(error ? { error } : {}) });
 
 export class DesignSessions {
     private readonly records = new Map<string, DesignRecord>();
@@ -138,7 +144,7 @@ export class DesignSessions {
     }
 
     list(): DesignView[] {
-        return [...this.records.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(view);
+        return [...this.records.values()].filter((record) => !record.archived).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(view);
     }
 
     get(id: string): DesignView | undefined {
@@ -198,11 +204,15 @@ export class DesignSessions {
      * A message of the person; a paused session wakes up first. The first one runs the skill with
      * the message as its argument (usually the topic), the next ones are plain messages.
      */
-    async send(id: string, input: { text?: unknown }): Promise<void> {
+    async send(id: string, input: { text?: unknown; model?: unknown }): Promise<void> {
         const text = String(input.text ?? '').trim();
         if (!text) throw new DesignError('text is required', 400);
+        const model = input.model ? String(input.model) : undefined;
+        if (model && !MODEL.test(model)) throw new DesignError('model must be provider/model', 400);
         const record = await this.awake(id);
         record.lastActive = new Date(this.now()).toISOString();
+        // A model picked with a message is the model of the session from then on.
+        if (model) record.model = model;
         if (!record.opened) {
             record.opened = true;
             this.save();
@@ -307,6 +317,15 @@ export class DesignSessions {
         return view(record);
     }
 
+    /** Takes a session off the lists: a live one is closed first, without a pull request. */
+    async archive(id: string): Promise<DesignView> {
+        const record = this.find(id);
+        if (LIVE.includes(record.status)) await this.close(record, 'cancelled');
+        record.archived = true;
+        this.save();
+        return view(record);
+    }
+
     /** Pauses the sessions left alone and removes the ones paused for too long. */
     async sweep(): Promise<void> {
         const now = this.now();
@@ -326,6 +345,17 @@ export class DesignSessions {
                 this.options.log('design removed after its days', { design: record.id });
             }
         }
+    }
+
+    /** The time the agent works: from busy to idle, added to the session. */
+    private count(record: DesignRecord, busy: boolean) {
+        const now = this.now();
+        if (busy && !record.busySince) record.busySince = new Date(now).toISOString();
+        else if (!busy && record.busySince) {
+            record.workSeconds = (record.workSeconds ?? 0) + Math.max(0, now - Date.parse(record.busySince)) / 1000;
+            delete record.busySince;
+        } else return;
+        this.save();
     }
 
     private slot(record: DesignRecord) {
@@ -425,6 +455,7 @@ export class DesignSessions {
                         const data = block.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('');
                         if (!data) continue;
                         const event = designEventOf(JSON.parse(data), record.session ?? '', roles);
+                        if (event?.type === 'busy') this.count(record, event.busy);
                         if (event) this.emit(record.id, event);
                     }
                 }
