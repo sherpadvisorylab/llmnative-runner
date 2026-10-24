@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { Tenant, Tenants } from './tenants.ts';
 import { actionOf, validSignature } from './webhook.ts';
 import { DesignError, type DesignEvent } from './designs.ts';
+import type { DesignKit } from './docker.ts';
 
 // The HTTP side of the runner. Every route of a company lives under its path, `/<company>/…`, and is
 // served with that company only: its webhook secret, its studio token, its dispatcher.
@@ -49,7 +50,7 @@ export function routeOf(path: string, legacy?: string): { company?: string; rest
     return { company: legacy, rest: path };
 }
 
-export function createRunnerServer(tenants: Tenants, options: { legacy?: string; log: (line: string, details?: Record<string, unknown>) => void }) {
+export function createRunnerServer(tenants: Tenants, options: { legacy?: string; log: (line: string, details?: Record<string, unknown>) => void; design?: DesignKit }) {
     return createServer(async (request, response) => {
         try {
             const url = new URL(request.url ?? '/', 'http://runner');
@@ -60,6 +61,11 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                     companies: all.length,
                     running: all.reduce((sum, tenant) => sum + tenant.dispatcher.state.running.length, 0),
                     queued: all.reduce((sum, tenant) => sum + tenant.dispatcher.state.queued.length, 0),
+                    // The services of the runner: what the studio shows on its page (no secret here).
+                    services: {
+                        dispatcher: true,
+                        design: options.design ? { kit: options.design.kit, name: options.design.name, command: options.design.command, skills: options.design.skills, source: options.design.source, commit: options.design.commit, opencode: options.design.opencode } : null,
+                    },
                 });
             }
             const { company, rest } = routeOf(url.pathname, options.legacy);

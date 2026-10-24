@@ -39,6 +39,13 @@ WORKDIR /work
 ENV HOME=/home/agent
 EXPOSE 4096
 LABEL org.opencontainers.image.title="playbook-designer" \
-      org.opencontainers.image.description="The design agent of Playbook: an interactive opencode session with the design skills of mattpocock/skills"
+      org.opencontainers.image.description="The design agent of Playbook: an interactive opencode session with the design skills of mattpocock/skills" \
+      playbook.design.kit="matt" \
+      playbook.design.name="Matt Pocock" \
+      playbook.design.command="grill-with-docs" \
+      playbook.design.skills="${SKILLS}" \
+      playbook.design.source="${SKILLS_REPOSITORY}" \
+      playbook.design.commit="${SKILLS_COMMIT}" \
+      playbook.design.opencode="${OPENCODE_VERSION}"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/playbook-designer"]

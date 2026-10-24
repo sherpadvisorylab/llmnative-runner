@@ -1,5 +1,5 @@
 import { ConfigError, readLegacyCompany, readMachineConfig, type CompanyConfig, type MachineConfig } from './config.ts';
-import { designHost, dockerRunner, ownNetwork } from './docker.ts';
+import { designHost, designKit, dockerRunner, ownNetwork } from './docker.ts';
 import { designSlots } from './designs.ts';
 import { hostname } from 'node:os';
 import { createRunnerServer } from './server.ts';
@@ -35,6 +35,8 @@ async function main() {
     // The sessions join the network of the dispatcher, to be reached by name.
     const network = machine.design.network ?? await ownNetwork(hostname());
     const slots = designSlots(machine.design.maxSessions);
+    // The design agent of this runner, if its compose names one: its kit, from the labels of the image.
+    const kit = machine.design.image ? await designKit(machine.design.image) : undefined;
     const tenants = new Tenants({
         machine,
         // Each company its own runner of turns: its turns carry its App id, so a restart clears its own only.
@@ -44,6 +46,7 @@ async function main() {
         },
         designHost: (config) => designHost({ image: machine.design.image, memory: machine.design.memory, network, owner: `app-${config.appId}` }),
         designSlots: slots,
+        ...(kit ? { designCommand: kit.command } : {}),
     }, legacy ? [legacy] : []);
 
     const start = async (fresh = false) => {
@@ -55,7 +58,7 @@ async function main() {
         for (const [id, problem] of tenants.problems) log('company skipped', { company: id, problem });
     };
 
-    const server = createRunnerServer(tenants, { legacy: legacy?.id, log });
+    const server = createRunnerServer(tenants, { legacy: legacy?.id, log, design: kit });
     server.listen(machine.port, async () => {
         log('runner listening', { port: machine.port, image: machine.image, maxParallel: machine.maxParallel, companiesDir: machine.companiesDir, designImage: machine.design.image, designNetwork: network ?? 'published on 127.0.0.1' });
         await start(true);

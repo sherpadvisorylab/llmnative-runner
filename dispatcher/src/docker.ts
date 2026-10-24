@@ -143,6 +143,36 @@ export function designHost(options: DesignHostOptions): DesignHost {
     };
 }
 
+/** The kit of a design image, from its labels (`playbook.design.*`): who asks the questions, with which skills. */
+export type DesignKit = { image: string; kit: string; name: string; command: string; skills: string[]; source: string; commit: string; opencode: string };
+
+/** Reads the kit of the design image, pulling it the first time; undefined when it cannot be read. */
+export async function designKit(image: string, command = 'docker'): Promise<DesignKit | undefined> {
+    const inspect = () => docker(command, ['image', 'inspect', '--format', '{{json .Config.Labels}}', image]);
+    let result = await inspect();
+    if (result.code !== 0) {
+        await docker(command, ['pull', '-q', image]);
+        result = await inspect();
+    }
+    if (result.code !== 0) return undefined;
+    try {
+        const labels = JSON.parse(result.output.trim().split('\n').pop() ?? '{}') as Record<string, string>;
+        const label = (name: string) => labels[`playbook.design.${name}`] ?? '';
+        return {
+            image,
+            kit: label('kit') || 'unknown',
+            name: label('name'),
+            command: label('command') || 'grill-with-docs',
+            skills: label('skills').split(/\s+/).filter(Boolean).map((skill) => skill.split('/').pop() ?? skill),
+            source: label('source'),
+            commit: label('commit'),
+            opencode: label('opencode'),
+        };
+    } catch {
+        return undefined;
+    }
+}
+
 /** The network of the container the dispatcher runs in, if it runs in one: the sessions join it. */
 export async function ownNetwork(hostname: string, command = 'docker'): Promise<string | undefined> {
     const result = await docker(command, ['inspect', '--format', '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}', hostname]);

@@ -104,7 +104,7 @@ export interface DesignOptions {
     idleMinutes: number;
     /** Days a paused session is kept before it is removed. */
     keepDays: number;
-    /** The skill the session starts with. */
+    /** The skill the session starts with, the command of the kit; none: no design agent on this runner. */
     command?: string;
     fetch?: typeof fetch;
     now?: () => number;
@@ -157,6 +157,7 @@ export class DesignSessions {
         const repository = String(input.repository ?? '');
         const topic = String(input.topic ?? '').trim();
         const model = input.model ? String(input.model) : undefined;
+        if (!this.options.command) throw new DesignError('this runner has no design agent', 404);
         if (!REPOSITORY.test(repository)) throw new DesignError('repository must be owner/name', 400);
         if (!topic) throw new DesignError('topic is required', 400);
         if (model && !MODEL.test(model)) throw new DesignError('model must be provider/model', 400);
@@ -219,7 +220,7 @@ export class DesignSessions {
             // opencode answers this call when the round is over: a wait longer than fetch allows for
             // the headers is no failure, the round goes on and its events arrive.
             void this.call(record, 'POST', `/session/${record.session}/command`, {
-                command: this.options.command ?? 'grill-with-docs',
+                command: this.options.command,
                 arguments: text,
                 ...(record.model ? { model: record.model } : {}),
             }, { timeout: 0 }).catch((error: Error & { cause?: { code?: string } }) => {
