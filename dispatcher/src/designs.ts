@@ -146,15 +146,18 @@ export class DesignSessions {
         return record && view(record);
     }
 
-    /** Starts a session on a repository of the company, with what it is about. */
-    async start(input: { repository?: unknown; topic?: unknown; model?: unknown }): Promise<DesignView> {
+    /** Starts a session on a repository of the company, with what it is about; `id` may come from the studio (8 hex). */
+    async start(input: { id?: unknown; repository?: unknown; topic?: unknown; model?: unknown }): Promise<DesignView> {
         const repository = String(input.repository ?? '');
         const topic = String(input.topic ?? '').trim();
         const model = input.model ? String(input.model) : undefined;
         if (!REPOSITORY.test(repository)) throw new DesignError('repository must be owner/name', 400);
         if (!topic) throw new DesignError('topic is required', 400);
         if (model && !MODEL.test(model)) throw new DesignError('model must be provider/model', 400);
-        const id = randomBytes(4).toString('hex');
+        // The studio may choose the id, to tie its chat to the session before it exists.
+        const wanted = typeof input.id === 'string' ? input.id : '';
+        if (wanted && (!/^[a-f0-9]{8}$/.test(wanted) || this.records.has(wanted))) throw new DesignError('id must be 8 hex digits, not taken', 400);
+        const id = wanted || randomBytes(4).toString('hex');
         if (!this.options.slots.take(`${this.options.company}/${id}`)) throw new DesignError('too many design sessions on this runner: try again later', 429);
         const at = new Date(this.now()).toISOString();
         const record: DesignRecord = {
