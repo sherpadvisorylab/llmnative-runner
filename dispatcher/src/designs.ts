@@ -19,6 +19,8 @@ export interface DesignHost {
     remove(name: string): Promise<void>;
     /** The documents the session wrote (`playbook-design-files` in the container). */
     files(name: string): Promise<DesignFile[]>;
+    /** The last lines the container printed, to say why a session did not start. */
+    logs(name: string): Promise<string>;
 }
 
 export type DesignFile = { path: string; content: string };
@@ -172,19 +174,24 @@ export class DesignSessions {
             this.save();
             this.options.log('design started', { design: id, repository });
             // The first round takes a while: it goes on in the background, the studio follows the events.
+            // opencode answers this call when the round is over: a wait longer than fetch allows for
+            // the headers is no failure, the round goes on and its events arrive.
             void this.call(record, 'POST', `/session/${record.session}/command`, {
                 command: this.options.command ?? 'grill-with-docs',
                 arguments: topic,
                 ...(model ? { model } : {}),
-            }).catch((error: Error) => this.emit(id, { type: 'error', message: error.message }));
+            }, { timeout: 0 }).catch((error: Error & { cause?: { code?: string } }) => {
+                if (error.cause?.code !== 'UND_ERR_HEADERS_TIMEOUT') this.emit(id, { type: 'error', message: error.message });
+            });
             return view(record);
         } catch (error) {
             record.status = 'failed';
             record.error = (error as Error).message;
             this.options.slots.release(this.slot(record));
             this.save();
+            const logs = await this.options.host.logs(record.container).catch(() => '');
             await this.options.host.remove(record.container).catch(() => undefined);
-            this.options.log('design failed to start', { design: id, error: record.error });
+            this.options.log('design failed to start', { design: id, error: record.error, logs: logs.slice(-2000) });
             throw new DesignError(`the design session did not start: ${record.error}`, 502);
         }
     }
@@ -353,7 +360,8 @@ export class DesignSessions {
         const until = this.now() + (this.options.readyTimeout ?? 60_000);
         for (;;) {
             try {
-                await this.call(record, 'GET', '/session');
+                // While it starts, opencode may take the connection and answer late: a short wait each time.
+                await this.call(record, 'GET', '/session', undefined, { timeout: 5000 });
                 return;
             } catch (error) {
                 if (this.now() > until) throw error;
@@ -362,10 +370,12 @@ export class DesignSessions {
         }
     }
 
-    private async call<T>(record: DesignRecord, method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    /** A call to the opencode of a session; 30 seconds at most unless said otherwise (0: no limit). */
+    private async call<T>(record: DesignRecord, method: string, path: string, body?: unknown, options: { timeout?: number } = {}): Promise<T> {
+        const timeout = options.timeout ?? 30_000;
         const response = await this.fetch(`${record.address}${path}`, {
             method,
-            signal,
+            signal: timeout ? AbortSignal.timeout(timeout) : undefined,
             headers: { authorization: `Basic ${Buffer.from(`opencode:${record.password}`).toString('base64')}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
             body: body !== undefined ? JSON.stringify(body) : undefined,
         });

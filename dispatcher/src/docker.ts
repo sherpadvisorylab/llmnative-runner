@@ -133,6 +133,9 @@ export function designHost(options: DesignHostOptions): DesignHost {
         async remove(name) {
             await must(['rm', '-f', name]);
         },
+        async logs(name) {
+            return (await docker(command, ['logs', '--tail', '30', name], base)).output;
+        },
         async files(name) {
             const output = await must(['exec', name, 'playbook-design-files']);
             return (JSON.parse(output.slice(output.indexOf('{'))) as { files: DesignFile[] }).files;
