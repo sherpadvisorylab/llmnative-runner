@@ -10,7 +10,9 @@ import { join } from 'node:path';
 const REPO = '/work/repo';
 const MAX_FILE = 1024 * 1024;
 const MAX_TOTAL = 5 * 1024 * 1024;
-const SKIP = /^(\.git|\.opencode|\.claude|\.agents|node_modules)\//;
+const SKIP = /^(\.git|\.opencode|\.claude|\.agents|_bmad|node_modules)\//;
+// The folders a kit writes its documents to (PLAYBOOK_DESIGN_OUTPUTS, space separated); none: anywhere.
+const OUTPUTS = (process.env.PLAYBOOK_DESIGN_OUTPUTS ?? '').split(/\s+/).filter(Boolean).map((folder) => folder.replace(/\/+$/, '') + '/');
 
 const status = execFileSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd: REPO, encoding: 'utf8' });
 const entries = status.split('\0').filter(Boolean);
@@ -22,7 +24,7 @@ for (let index = 0; index < entries.length; index += 1) {
     const path = entries[index].slice(3);
     // A rename is followed by its old path.
     if (code.startsWith('R') || code.startsWith('C')) index += 1;
-    if (code.includes('D') || SKIP.test(path)) continue;
+    if (code.includes('D') || SKIP.test(path) || (OUTPUTS.length && !OUTPUTS.some((folder) => path.startsWith(folder)))) continue;
     const full = join(REPO, path);
     const size = statSync(full).size;
     if (size > MAX_FILE) {

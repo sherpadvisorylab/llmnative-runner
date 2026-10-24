@@ -1,0 +1,59 @@
+# The design agent with the BMAD Method: one container per design session, as the Matt image
+# (Dockerfile), with the V7 skills of bmad-code-org/BMAD-METHOD (MIT) at a fixed commit. BMAD runs its
+# own scripts (Python 3.11 with uv) and keeps its runtime in the project (`_bmad/`): the session sets it
+# up in the clone at start, and only what it writes in `_bmad-output/` goes to the pull request.
+FROM node:24-bookworm-slim
+
+ARG OPENCODE_VERSION=1.19.3
+ARG UV_VERSION=0.11.15
+# The skills at a fixed commit of the V7 line: a new one is adopted on purpose, by changing it here.
+ARG SKILLS_REPOSITORY=https://github.com/bmad-code-org/BMAD-METHOD.git
+ARG SKILLS_COMMIT=61e01f82644c4bb533750cfa0d6d61ab61d2cc9b
+# The skills shown for the kit; every skill of the repository is installed (they call one another).
+ARG SKILLS="bmad-product-brief bmad-forge-idea bmad-prd bmad-architecture bmad-ux bmad-brainstorming"
+
+# Python 3.11 (Debian bookworm) for the scripts of BMAD, uv to run them.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates tini curl python3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g "opencode-ai@${OPENCODE_VERSION}" \
+    && npm cache clean --force
+COPY --from=ghcr.io/astral-sh/uv:0.11.15 /uv /uvx /usr/local/bin/
+
+RUN useradd --create-home --uid 10001 agent && mkdir -p /work && chown agent:agent /work
+
+# Copied, never installed with a script: what runs is what was read at that commit.
+RUN git clone --quiet --filter=blob:none "${SKILLS_REPOSITORY}" /tmp/skills \
+    && git -C /tmp/skills checkout --quiet "${SKILLS_COMMIT}" \
+    && mkdir -p /home/agent/.config/opencode/skills \
+    && cp -r /tmp/skills/skills/. /home/agent/.config/opencode/skills/ \
+    && cp /tmp/skills/LICENSE /home/agent/.config/opencode/skills/LICENSE \
+    && printf '%s@%s\n%s\n' "${SKILLS_REPOSITORY}" "${SKILLS_COMMIT}" "${SKILLS}" > /home/agent/.config/opencode/skills/SOURCE \
+    && rm -rf /tmp/skills \
+    && chown -R agent:agent /home/agent/.config
+
+COPY --chmod=0755 entrypoint.sh /usr/local/bin/playbook-designer
+COPY --chmod=0755 design-files.mjs /usr/local/bin/playbook-design-files
+COPY --chown=agent:agent opencode.json /home/agent/.config/opencode/opencode.json
+
+USER agent
+WORKDIR /work
+ENV HOME=/home/agent
+# uv uses the Python of the image, never downloads one, and keeps its cache in the home.
+ENV UV_PYTHON_DOWNLOADS=never UV_CACHE_DIR=/home/agent/.cache/uv
+# At the start of a session: the BMAD runtime in the clone (`_bmad/`), with its defaults.
+ENV PLAYBOOK_DESIGN_SETUP='uv run --no-cache "$HOME/.config/opencode/skills/bmad/scripts/setup.py" --project-root /work/repo --skill "$HOME/.config/opencode/skills/bmad" --root "$HOME/.config/opencode/skills"'
+# What goes to the pull request: the documents of BMAD, not its runtime.
+ENV PLAYBOOK_DESIGN_OUTPUTS=_bmad-output
+EXPOSE 4096
+LABEL org.opencontainers.image.title="playbook-design-bmad" \
+      org.opencontainers.image.description="The design agent of Playbook with the BMAD Method: an interactive opencode session with the V7 skills of bmad-code-org/BMAD-METHOD" \
+      playbook.design.kit="bmad" \
+      playbook.design.name="BMAD Method" \
+      playbook.design.command="bmad-product-brief" \
+      playbook.design.skills="${SKILLS}" \
+      playbook.design.source="${SKILLS_REPOSITORY}" \
+      playbook.design.commit="${SKILLS_COMMIT}" \
+      playbook.design.opencode="${OPENCODE_VERSION}"
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/playbook-designer"]

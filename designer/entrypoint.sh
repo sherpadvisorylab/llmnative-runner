@@ -4,7 +4,9 @@
 #                             clone is already there (the session started again after a pause)
 #   GITHUB_TOKEN              installation token for the clone; removed before opencode starts
 #   OPENCODE_SERVER_PASSWORD  required: the dispatcher talks to opencode with it
-# Exit codes: 64 wrong settings; 65 clone failed; others from opencode.
+#   PLAYBOOK_DESIGN_SETUP     a command run once in the clone before the session (set by the image of a
+#                             kit that keeps a runtime in the project, e.g. BMAD and its `_bmad/`)
+# Exit codes: 64 wrong settings; 65 clone failed; 66 setup of the kit failed; others from opencode.
 set -euo pipefail
 
 say() { printf '[playbook-designer] %s\n' "$*" >&2; }
@@ -31,6 +33,16 @@ fi
 # The session writes documents; the dispatcher reads them and opens the pull request. No token stays.
 unset GITHUB_TOKEN
 cd "$repo"
+
+# The runtime of the kit in the project, once (a session that starts again after a pause has it).
+if [[ -n "${PLAYBOOK_DESIGN_SETUP:-}" && ! -e .git/playbook-design-setup ]]; then
+    say "setting up the kit in the clone"
+    if ! bash -c "$PLAYBOOK_DESIGN_SETUP" >&2; then
+        say "the setup of the kit failed"
+        exit 66
+    fi
+    touch .git/playbook-design-setup
+fi
 
 say "design session on ${GITHUB_REPOSITORY:-the mounted repository}"
 exec opencode serve --hostname 0.0.0.0 --port 4096
