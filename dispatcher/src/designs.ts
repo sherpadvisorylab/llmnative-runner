@@ -226,13 +226,15 @@ export class DesignSessions {
         const record = this.find(id);
         if (record.status !== 'active') return [];
         type Part = { id: string; type: string; text?: string; synthetic?: boolean; tool?: string; state?: { input?: Record<string, unknown>; title?: string } };
-        const raw = await this.call<Array<{ info: { id: string; role: 'user' | 'assistant' }; parts: Part[] }>>(record, 'GET', `/session/${record.session}/message`);
+        const raw = await this.call<Array<{ info: { id: string; role: 'user' | 'assistant'; error?: { name?: string; data?: { message?: string } } }; parts: Part[] }>>(record, 'GET', `/session/${record.session}/message`);
         return raw.map((message, index) => ({
             id: message.info.id,
             role: message.info.role,
             text: message.info.role === 'user' && index === 0
                 ? record.topic
-                : message.parts.filter((part) => part.type === 'text' && !part.synthetic).map((part) => part.text ?? '').join('\n\n').trim(),
+                : message.parts.filter((part) => part.type === 'text' && !part.synthetic).map((part) => part.text ?? '').join('\n\n').trim()
+                    // A reply that failed says why.
+                    || (message.info.error ? `⚠ ${errorText(message.info.error)}` : ''),
             tools: message.parts.filter((part) => part.type === 'tool').map((part) => ({ tool: part.tool ?? '', title: toolTitle(part.state) })),
         }));
     }
@@ -441,6 +443,14 @@ export class DesignSessions {
     }
 }
 
+/** What went wrong, from an error of opencode: its message, without the body of the answer. */
+export function errorText(error: { name?: string; data?: { message?: string } } | undefined): string {
+    const message = String(error?.data?.message ?? error?.name ?? 'error');
+    // Providers wrap their reason in JSON (`Forbidden: {"errors":[{"message":"…"}]}`): the reason is enough.
+    const inner = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(message)?.[1];
+    return (inner ? inner.replace(/\\"/g, '"') : message).slice(0, 500);
+}
+
 /** A short line for what a tool did: the file it wrote, the command it ran. */
 function toolTitle(state?: { input?: Record<string, unknown>; title?: string }): string {
     const input = state?.input ?? {};
@@ -455,8 +465,10 @@ export function designEventOf(event: OpencodeEvent, session: string, roles: Map<
     switch (event.type) {
         case 'message.updated': {
             const info = properties.info;
-            if (info?.sessionID === session) roles.set(info.id, info.role);
-            return undefined;
+            if (info?.sessionID !== session) return undefined;
+            roles.set(info.id, info.role);
+            // opencode puts the failure of the model (a 403, a quota) on the reply itself.
+            return info.role === 'assistant' && info.error ? { type: 'error', message: errorText(info.error) } : undefined;
         }
         case 'message.part.delta':
             if (properties.sessionID !== session || properties.field !== 'text' || roles.get(properties.messageID) === 'user') return undefined;
@@ -473,7 +485,7 @@ export function designEventOf(event: OpencodeEvent, session: string, roles: Map<
         case 'session.idle':
             return properties.sessionID === session ? { type: 'busy', busy: false } : undefined;
         case 'session.error':
-            return properties.sessionID === session ? { type: 'error', message: String(properties.error?.data?.message ?? properties.error?.name ?? 'error') } : undefined;
+            return properties.sessionID === session ? { type: 'error', message: errorText(properties.error) } : undefined;
         default:
             return undefined;
     }
