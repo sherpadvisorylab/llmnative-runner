@@ -108,7 +108,8 @@ export interface DesignOptions {
 
 // Owner and name start with a letter or a digit: never `.` or `..`.
 const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/;
-const MODEL = /^[a-z0-9-]+\/[A-Za-z0-9._:-]+$/;
+// The id of a model may hold slashes and @ itself: openrouter/deepseek/…, cloudflare-workers-ai/@cf/….
+const MODEL = /^[a-z0-9-]+\/[A-Za-z0-9@._:+/-]+$/;
 const LIVE: DesignStatus[] = ['starting', 'active', 'paused'];
 
 export const designSlug = (title: string) => title.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'design';
