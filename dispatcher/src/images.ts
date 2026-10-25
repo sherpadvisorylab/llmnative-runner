@@ -19,6 +19,17 @@ export interface MachineImage {
     id?: string;
     size?: string;
     created?: string;
+    /**
+     * The containers made from it, running or stopped: Docker keeps the image while one is there. A
+     * design session names its own (`design`: its id, `company`), so the page can say which one.
+     */
+    containers?: Array<{ name: string; state: string; design?: string; company?: string }>;
+}
+
+/** The design session of a container, from its name: `playbook-design-<company>-<id>`. */
+export function designOfContainer(name: string): { company: string; design: string } | undefined {
+    const match = /^playbook-design-([a-z0-9][a-z0-9-]*)-([a-f0-9]{8})$/.exec(name);
+    return match ? { company: match[1], design: match[2] } : undefined;
 }
 
 export interface ImageHost {
@@ -70,13 +81,28 @@ export function dockerImages(options: { registry: string; inUse: () => Promise<s
             if (listed.code !== 0) throw new ImageError(`docker image ls failed: ${listed.output.trim().split('\n').pop()}`, 502);
             const used = new Set(await options.inUse());
             const found = new Map<string, MachineImage>();
+            // The containers of the machine, by the image they were made from (its name, or its id once untagged).
+            const containers: Array<{ image: string; name: string; state: string }> = [];
+            const ps = await run(command, ['ps', '-a', '--format', '{{json .}}']);
+            for (const line of ps.code === 0 ? ps.output.split('\n') : []) {
+                try {
+                    const container = JSON.parse(line) as { Image: string; Names: string; State: string };
+                    containers.push({ image: container.Image, name: container.Names, state: container.State });
+                } catch {
+                    // Not a line of the list.
+                }
+            }
+            const holders = (ref: string, id: string) => containers
+                .filter((container) => container.image === ref || (id && id.startsWith(container.image)) || (id && container.image.startsWith(id)))
+                .map(({ name, state }) => ({ name, state, ...designOfContainer(name) }));
             for (const line of listed.output.split('\n')) {
                 try {
                     const image = JSON.parse(line) as { Repository: string; Tag: string; ID: string; Size: string; CreatedAt: string };
                     if (!image.Repository.startsWith(prefix)) continue;
                     // An image left without a tag (a new version pulled over it) is known by its id.
                     const ref = image.Tag === '<none>' ? `${image.Repository}@${image.ID}` : `${image.Repository}:${image.Tag}`;
-                    found.set(ref, { ref, repository: image.Repository, tag: image.Tag, present: true, inUse: used.has(ref), id: image.ID, size: image.Size, created: image.CreatedAt });
+                    const held = holders(ref, image.ID);
+                    found.set(ref, { ref, repository: image.Repository, tag: image.Tag, present: true, inUse: used.has(ref), id: image.ID, size: image.Size, created: image.CreatedAt, ...(held.length ? { containers: held } : {}) });
                 } catch {
                     // Not a line of the list.
                 }
