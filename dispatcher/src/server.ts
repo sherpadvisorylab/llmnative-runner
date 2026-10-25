@@ -11,7 +11,7 @@ import { ImageError, imagePattern, isAdmin, type ImageHost } from './images.ts';
 //   GET  /health                       public: alive, and how busy (numbers only)
 //   POST /<company>/webhook            the webhook of its GitHub App
 //   GET  /<company>/state|events|output for its studio, with its DISPATCHER_TOKEN
-//   /<company>/designs[/<id>[/messages|events|finish]]  its design sessions, for its studio too
+//   /<company>/designs[/<id>[/messages|events|files|finish]]  its design sessions, for its studio too
 //   /_admin/images[/pull|/remove]       the images of the machine, with the admin token of the runner
 // A dispatcher started with one company in its environment also answers at the root, as before.
 
@@ -186,6 +186,8 @@ async function designs(tenant: Tenant, request: IncomingMessage, response: Serve
     } else if (what === 'messages' && request.method === 'POST') {
         await sessions.send(id, await json());
         return send(response, 202, { accepted: true });
+    } else if (what === 'files' && request.method === 'GET') {
+        return send(response, 200, await sessions.files(id));
     } else if (what === 'finish' && request.method === 'POST') {
         return send(response, 200, await sessions.finish(id, await json()));
     } else if (what === 'events' && request.method === 'GET') {

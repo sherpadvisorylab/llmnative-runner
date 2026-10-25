@@ -1,11 +1,11 @@
 import { randomBytes } from 'node:crypto';
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { GitHubApi } from './github.ts';
 import type { Log } from './dispatcher.ts';
 
 // The design sessions of a company: a person and the design agent (opencode with the design skills)
 // talk on a project, the agent writes documents, and at the end the dispatcher puts them in a pull
-// request as a source (`sources/<date>-<slug>/`). One container per session, reached over HTTP with
+// request as a source (`sources/conversations/<name>/`). One container per session, reached over HTTP with
 // a password of its own. A session left alone is paused (its container stopped, opencode keeps the
 // conversation on disk) and wakes up at the next message; after some days it is removed.
 
@@ -23,12 +23,18 @@ export interface DesignHost {
     logs(name: string): Promise<string>;
 }
 
-export type DesignFile = { path: string; content: string };
+/** A document of a session: added in the clone (`new`) or changed (`modified`). */
+export type DesignFile = { path: string; content: string; status?: 'new' | 'modified' };
 
 export type DesignStatus = 'starting' | 'active' | 'paused' | 'finished' | 'cancelled' | 'failed';
 
 interface DesignRecord {
     id: string;
+    /**
+     * Its name, given at the start: `<date>-<topic>-<method>`, the same for its page in the studio, its
+     * folder in `sources/conversations/` and its branch. Unique among the sessions of the repository.
+     */
+    name?: string;
     repository: string;
     topic: string;
     /** The kit of the session (its method): the image it runs and the skill it starts with. */
@@ -54,7 +60,7 @@ interface DesignRecord {
 }
 
 /** A session as the studio sees it: no container, no password. */
-export type DesignView = Pick<DesignRecord, 'id' | 'repository' | 'topic' | 'kit' | 'model' | 'status' | 'createdAt' | 'lastActive' | 'pullRequest' | 'error' | 'workSeconds'>;
+export type DesignView = Pick<DesignRecord, 'id' | 'name' | 'repository' | 'topic' | 'kit' | 'model' | 'status' | 'createdAt' | 'lastActive' | 'pullRequest' | 'error' | 'workSeconds'>;
 
 /** A message of the conversation, for the studio. */
 export type DesignMessage = { id: string; role: 'user' | 'assistant'; text: string; tools: Array<{ tool: string; title: string }> };
@@ -122,7 +128,7 @@ const LIVE: DesignStatus[] = ['starting', 'active', 'paused'];
 
 export const designSlug = (title: string) => title.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'design';
 
-const view = ({ id, repository, topic, kit, model, status, createdAt, lastActive, pullRequest, error, workSeconds }: DesignRecord): DesignView => ({ id, repository, topic, ...(kit ? { kit } : {}), model, status, createdAt, lastActive, workSeconds: Math.round(workSeconds ?? 0), ...(pullRequest ? { pullRequest } : {}), ...(error ? { error } : {}) });
+const view = ({ id, name, repository, topic, kit, model, status, createdAt, lastActive, pullRequest, error, workSeconds }: DesignRecord): DesignView => ({ id, ...(name ? { name } : {}), repository, topic, ...(kit ? { kit } : {}), model, status, createdAt, lastActive, workSeconds: Math.round(workSeconds ?? 0), ...(pullRequest ? { pullRequest } : {}), ...(error ? { error } : {}) });
 
 export class DesignSessions {
     private readonly records = new Map<string, DesignRecord>();
@@ -174,7 +180,7 @@ export class DesignSessions {
         if (!this.options.slots.take(`${this.options.company}/${id}`)) throw new DesignError('too many design sessions on this runner: try again later', 429);
         const at = new Date(this.now()).toISOString();
         const record: DesignRecord = {
-            id, repository, topic, kit, model, status: 'starting', createdAt: at, lastActive: at,
+            id, name: this.nameFor(repository, topic, kit, at), repository, topic, kit, model, status: 'starting', createdAt: at, lastActive: at,
             container: `playbook-design-${this.options.company}-${id}`,
             password: randomBytes(24).toString('base64url'),
         };
@@ -248,6 +254,53 @@ export class DesignSessions {
         });
     }
 
+    /** `<date>-<topic>-<method>`, with `-2`, `-3`… when the repository has it already. */
+    private nameFor(repository: string, topic: string, kit: string, at: string): string {
+        const base = `${at.slice(0, 10)}-${((slug) => (slug.length > 40 ? slug.slice(0, 41).replace(/-[^-]*$/, '') : slug))(designSlug(topic))}-${kit}`;
+        const taken = new Set([...this.records.values()].filter((record) => record.repository === repository).map((record) => record.name));
+        let name = base;
+        for (let next = 2; taken.has(name); next += 1) name = `${base}-${next}`;
+        return name;
+    }
+
+    /**
+     * The documents of a session as they are now: read from its container while it is active, else the
+     * last ones read (a paused session is not woken up for this, a finished one keeps its own).
+     */
+    async files(id: string): Promise<{ files: DesignFile[]; live: boolean; at?: string }> {
+        const record = this.find(id);
+        if (record.status === 'active') {
+            try {
+                const files = await this.options.host.files(record.container);
+                return { files, live: true, at: this.keepFiles(record, files) };
+            } catch {
+                // Busy writing, or just stopped: the last ones read.
+            }
+        }
+        try {
+            const kept = JSON.parse(readFileSync(this.filesOf(record), 'utf8')) as { files: DesignFile[]; at: string };
+            return { files: kept.files, live: false, at: kept.at };
+        } catch {
+            return { files: [], live: false };
+        }
+    }
+
+    private filesOf(record: DesignRecord) {
+        return `${this.options.file.replace(/\.json$/, '')}-files/${record.id}.json`;
+    }
+
+    /** Keeps the documents last read, for when the container is stopped or gone; says when. */
+    private keepFiles(record: DesignRecord, files: DesignFile[]): string {
+        const at = new Date(this.now()).toISOString();
+        try {
+            mkdirSync(this.filesOf(record).replace(/\/[^/]+$/, ''), { recursive: true });
+            writeFileSync(this.filesOf(record), JSON.stringify({ at, files }));
+        } catch {
+            // A copy only: the documents are in the container.
+        }
+        return at;
+    }
+
     /** The question the agent of the session is waiting on, if any (an older opencode has none). */
     private async pendingQuestion(record: DesignRecord): Promise<QuestionRequest | undefined> {
         const pending = await this.call<QuestionRequest[]>(record, 'GET', '/question').catch(() => []);
@@ -302,11 +355,13 @@ export class DesignSessions {
         const messages = await this.messages(id);
         if (!messages.some((message) => message.role === 'assistant' && message.text)) throw new DesignError('the agent has not answered yet', 409);
         const written = await this.options.host.files(record.container);
+        this.keepFiles(record, written);
         const { github } = this.options;
         const repo = `/repos/${record.repository}`;
         const date = new Date(this.now()).toISOString().slice(0, 10);
         const method = record.kit ?? 'design';
-        const name = `${date}-${designSlug(title)}-${method}`;
+        // The name given at the start; a session started before names had one from its title.
+        const name = record.name ?? `${date}-${designSlug(title)}-${method}`;
         // sources/ is the raw archive of the project: one folder per conversation, only ever added to.
         const folder = `sources/conversations/${name}`;
         const files = [{ path: 'transcript.md', content: transcriptOf(record, messages, title, new Date(this.now()).toISOString()) }, ...written.filter((file) => file.path !== 'transcript.md')];
@@ -318,7 +373,7 @@ export class DesignSessions {
             tree: files.map((file) => ({ path: `${folder}/${file.path}`, mode: '100644', type: 'blob', content: file.content })),
         });
         const commit = await github.request<{ sha: string }>('POST', `${repo}/git/commits`, { message: `Design: ${title}`, tree: tree.sha, parents: [head] });
-        const branch = `design/${name}-${record.id}`;
+        const branch = record.name ? `design/${name}` : `design/${name}-${record.id}`;
         await github.request('POST', `${repo}/git/refs`, { ref: `refs/heads/${branch}`, sha: commit.sha });
         const pull = await github.request<{ number: number; html_url: string }>('POST', `${repo}/pulls`, {
             title: `Design: ${title}`,

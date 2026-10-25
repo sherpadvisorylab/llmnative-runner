@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The documents a design session wrote: every file added or changed in the clone, as JSON on stdout
-// ({ files: [{ path, content }], skipped: [why] }), for the dispatcher to put in the pull request. Text
+// ({ files: [{ path, content, status: new | modified }], skipped: [why] }), for the dispatcher to put in the pull request. Text
 // files only; deletions and the tooling folders are left out. Exit code 1 with a message on stderr
 // when the documents are too large.
 import { execFileSync } from 'node:child_process';
@@ -42,6 +42,6 @@ for (let index = 0; index < entries.length; index += 1) {
         process.stderr.write(`the documents are larger than ${MAX_TOTAL} bytes\n`);
         process.exit(1);
     }
-    files.push({ path, content: content.toString('utf8') });
+    files.push({ path, content: content.toString('utf8'), status: code === '??' || code.includes('A') ? 'new' : 'modified' });
 }
 process.stdout.write(JSON.stringify({ files, skipped }));
