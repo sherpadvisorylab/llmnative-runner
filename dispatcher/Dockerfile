@@ -13,6 +13,10 @@ WORKDIR /app
 COPY package.json ./
 COPY src ./src
 
+# The release of the runner, shown by /health (the studio compares it with the latest published).
+ARG RUNNER_VERSION=dev
+ENV PLAYBOOK_RUNNER_VERSION=${RUNNER_VERSION}
+
 # Root in the container: the Docker socket gives that power anyway, and its group differs per host.
 ENV DATA_DIR=/data PORT=8080 NODE_ENV=production
 VOLUME ["/data"]

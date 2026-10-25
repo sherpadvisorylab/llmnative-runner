@@ -4,6 +4,7 @@ import type { Tenant, Tenants } from './tenants.ts';
 import { actionOf, validSignature } from './webhook.ts';
 import { DesignError, type DesignEvent } from './designs.ts';
 import type { DesignKit } from './docker.ts';
+import { ImageError, imagePattern, isAdmin, type ImageHost } from './images.ts';
 
 // The HTTP side of the runner. Every route of a company lives under its path, `/<company>/…`, and is
 // served with that company only: its webhook secret, its studio token, its dispatcher.
@@ -11,6 +12,7 @@ import type { DesignKit } from './docker.ts';
 //   POST /<company>/webhook            the webhook of its GitHub App
 //   GET  /<company>/state|events|output for its studio, with its DISPATCHER_TOKEN
 //   /<company>/designs[/<id>[/messages|events|finish]]  its design sessions, for its studio too
+//   /_admin/images[/pull|/remove]       the images of the machine, with the admin token of the runner
 // A dispatcher started with one company in its environment also answers at the root, as before.
 
 const MAX_BODY = 5 * 1024 * 1024;
@@ -50,7 +52,15 @@ export function routeOf(path: string, legacy?: string): { company?: string; rest
     return { company: legacy, rest: path };
 }
 
-export function createRunnerServer(tenants: Tenants, options: { legacy?: string; log: (line: string, details?: Record<string, unknown>) => void; designs?: DesignKit[] }) {
+/** What only the person who manages the machine does: its images. */
+export interface RunnerAdmin {
+    /** The admin token now (none: the routes do not exist). */
+    token: () => string | undefined;
+    images: ImageHost;
+    registry: string;
+}
+
+export function createRunnerServer(tenants: Tenants, options: { legacy?: string; log: (line: string, details?: Record<string, unknown>) => void; designs?: DesignKit[]; version?: string; admin?: RunnerAdmin }) {
     return createServer(async (request, response) => {
         try {
             const url = new URL(request.url ?? '/', 'http://runner');
@@ -58,6 +68,7 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                 const all = tenants.all();
                 return send(response, 200, {
                     ok: true,
+                    version: options.version ?? 'dev',
                     companies: all.length,
                     running: all.reduce((sum, tenant) => sum + tenant.dispatcher.state.running.length, 0),
                     queued: all.reduce((sum, tenant) => sum + tenant.dispatcher.state.queued.length, 0),
@@ -68,6 +79,13 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                         designs: (options.designs ?? []).map(({ kit, name, command, skills, source, commit, opencode }) => ({ kit, name, command, skills, source, commit, opencode })),
                     },
                 });
+            }
+            // `_` is never in the id of a company: these paths are of the machine.
+            if (url.pathname.startsWith('/_admin/')) {
+                const admin = options.admin;
+                // No admin token on the machine and a wrong one look the same from outside.
+                if (!admin || !isAdmin(admin.token(), request.headers.authorization)) return send(response, 404, { error: 'not found' });
+                return await images(admin, request, response, url.pathname.slice('/_admin'.length), options.log);
             }
             const { company, rest } = routeOf(url.pathname, options.legacy);
             const tenant = company ? tenants.get(company) : undefined;
@@ -120,11 +138,35 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
             }
             send(response, 404, { error: 'not found' });
         } catch (error) {
-            if (error instanceof DesignError) return send(response, error.status, { error: error.message });
+            if (error instanceof DesignError || error instanceof ImageError) return send(response, error.status, { error: error.message });
             options.log('request failed', { error: (error as Error).message });
             if (!response.headersSent) send(response, 400, { error: 'bad request' });
         }
     });
+}
+
+/** The images of the machine: the list, then pulling or removing some, one by one (each with its outcome). */
+async function images(admin: RunnerAdmin, request: IncomingMessage, response: ServerResponse, path: string, log: (line: string, details?: Record<string, unknown>) => void) {
+    if (request.method === 'GET' && path === '/images') return send(response, 200, { registry: admin.registry, images: await admin.images.list() });
+    if (request.method === 'POST' && (path === '/images/pull' || path === '/images/remove')) {
+        const body = JSON.parse((await readBody(request)) || '{}') as { images?: unknown };
+        const refs = Array.isArray(body.images) ? body.images.filter((ref): ref is string => typeof ref === 'string') : [];
+        const valid = imagePattern(admin.registry);
+        if (!refs.length || refs.length > 20 || !refs.every((ref) => valid.test(ref))) return send(response, 400, { error: `images of ${admin.registry}/playbook-* only` });
+        const pull = path === '/images/pull';
+        const results = [];
+        for (const ref of refs) {
+            try {
+                await (pull ? admin.images.pull(ref) : admin.images.remove(ref));
+                log(pull ? 'image pulled' : 'image removed', { image: ref });
+                results.push({ ref, ok: true });
+            } catch (error) {
+                results.push({ ref, ok: false, error: (error as Error).message });
+            }
+        }
+        return send(response, 200, { results });
+    }
+    send(response, 404, { error: 'not found' });
 }
 
 /** The design sessions of a company: list and start, then one session, its messages, events and end. */

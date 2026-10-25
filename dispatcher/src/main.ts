@@ -1,6 +1,7 @@
 import { ConfigError, readLegacyCompany, readMachineConfig, type CompanyConfig, type MachineConfig } from './config.ts';
 import { designHost, designKit, dockerRunner, ownNetwork, type DesignKit } from './docker.ts';
 import { designSlots } from './designs.ts';
+import { adminToken, dockerImages, ownImage } from './images.ts';
 import { hostname } from 'node:os';
 import { createRunnerServer } from './server.ts';
 import { Tenants, machineLimit } from './tenants.ts';
@@ -58,9 +59,18 @@ async function main() {
         for (const [id, problem] of tenants.problems) log('company skipped', { company: id, problem });
     };
 
-    const server = createRunnerServer(tenants, { legacy: legacy?.id, log, designs: kits });
+    // The images the runner uses: those of its settings and the one of its own container.
+    const own = await ownImage(hostname());
+    const images = dockerImages({ registry: machine.registry, inUse: async () => [machine.image, ...machine.design.images, ...(own ? [own] : [])] });
+    const server = createRunnerServer(tenants, {
+        legacy: legacy?.id,
+        log,
+        designs: kits,
+        version: machine.version,
+        admin: { token: () => adminToken(machine.adminTokenFile), images, registry: machine.registry },
+    });
     server.listen(machine.port, async () => {
-        log('runner listening', { port: machine.port, image: machine.image, maxParallel: machine.maxParallel, companiesDir: machine.companiesDir, designKits: kits.map((kit) => kit.kit), designNetwork: network ?? 'published on 127.0.0.1' });
+        log('runner listening', { version: machine.version, admin: !!adminToken(machine.adminTokenFile), port: machine.port, image: machine.image, maxParallel: machine.maxParallel, companiesDir: machine.companiesDir, designKits: kits.map((kit) => kit.kit), designNetwork: network ?? 'published on 127.0.0.1' });
         await start(true);
         setInterval(() => void start(), SYNC_MS).unref();
         setInterval(() => { for (const tenant of tenants.all()) void tenant.dispatcher.reconcile(); }, machine.reconcileMinutes * 60_000).unref();

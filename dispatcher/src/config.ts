@@ -37,6 +37,12 @@ export interface MachineConfig {
     reconcileMinutes: number;
     memory?: string;
     network?: string;
+    /** The release of the runner (its images), baked in its image. */
+    version: string;
+    /** The registry of the images of the runner: only these are listed, pulled and removed. */
+    registry: string;
+    /** The file with the admin token of the runner (written by the studio); none: no admin routes. */
+    adminTokenFile: string;
     /** The design sessions: the images of the design agents, one per kit (none: no design agent on this runner), how many at once on the machine, when they pause and go. */
     design: { images: string[]; maxSessions: number; idleMinutes: number; keepDays: number; memory?: string; network?: string };
 }
@@ -87,6 +93,9 @@ export function readMachineConfig(env: Vars = process.env): MachineConfig {
         reconcileMinutes: positive(env, 'RECONCILE_MINUTES', 10),
         memory: env.AGENT_MEMORY || undefined,
         network: env.AGENT_NETWORK || undefined,
+        version: env.PLAYBOOK_RUNNER_VERSION || 'dev',
+        registry: (env.IMAGE_REGISTRY || 'ghcr.io/sherpadvisorylab').replace(/\/+$/, ''),
+        adminTokenFile: env.ADMIN_TOKEN_FILE || '/admin/token',
         design: {
             // The design agents of the runner, one image per kit (DESIGN_IMAGES, space or comma
             // separated; DESIGN_IMAGE for one, as before). None: no design sessions here.
