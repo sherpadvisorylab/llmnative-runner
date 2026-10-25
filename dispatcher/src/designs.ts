@@ -298,13 +298,18 @@ export class DesignSessions {
         const title = String(input.title ?? '').trim();
         if (!title) throw new DesignError('title is required', 400);
         const record = await this.awake(id);
-        const files = await this.options.host.files(record.container);
-        if (!files.length) throw new DesignError('the session has not written any document yet', 409);
+        // The conversation as it went is a source too, next to what the agent wrote.
+        const messages = await this.messages(id);
+        if (!messages.some((message) => message.role === 'assistant' && message.text)) throw new DesignError('the agent has not answered yet', 409);
+        const written = await this.options.host.files(record.container);
         const { github } = this.options;
         const repo = `/repos/${record.repository}`;
         const date = new Date(this.now()).toISOString().slice(0, 10);
-        const name = `${date}-${designSlug(title)}`;
-        const folder = `sources/${name}`;
+        const method = record.kit ?? 'design';
+        const name = `${date}-${designSlug(title)}-${method}`;
+        // sources/ is the raw archive of the project: one folder per conversation, only ever added to.
+        const folder = `sources/conversations/${name}`;
+        const files = [{ path: 'transcript.md', content: transcriptOf(record, messages, title, new Date(this.now()).toISOString()) }, ...written.filter((file) => file.path !== 'transcript.md')];
         const base = (await github.request<{ default_branch: string }>('GET', repo)).default_branch;
         const head = (await github.request<{ object: { sha: string } }>('GET', `${repo}/git/ref/heads/${encodeURIComponent(base)}`)).object.sha;
         const baseTree = (await github.request<{ tree: { sha: string } }>('GET', `${repo}/git/commits/${head}`)).tree.sha;
@@ -320,9 +325,9 @@ export class DesignSessions {
             head: branch,
             base,
             body: [
-                `Documents written in a design session on "${record.topic}".`,
+                `A design session (${method}) on "${record.topic}": its whole conversation (\`transcript.md\`) and the documents it wrote.`,
                 '',
-                `They go to \`${folder}/\` as a **source**: read only, archived as they are. Once merged, the analyst turns them into Epics with their user stories, and what is decided goes to the memory of the company.`,
+                `They go to \`${folder}/\` as a **source**: raw, never changed, only added to. Once merged, other sessions can read them, the analyst turns them into Epics with their user stories, and what is decided goes, refined, to the memory of the company.`,
                 '',
                 ...files.map((file) => `- \`${folder}/${file.path}\``),
             ].join('\n'),
@@ -523,6 +528,35 @@ export function errorText(error: { name?: string; data?: { message?: string } } 
     // Providers wrap their reason in JSON (`Forbidden: {"errors":[{"message":"…"}]}`): the reason is enough.
     const inner = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(message)?.[1];
     return (inner ? inner.replace(/\\"/g, '"') : message).slice(0, 500);
+}
+
+/**
+ * The conversation of a session as a source: who asked what, the answers, what the agent did, as it
+ * went. The first message of the person is the topic; a question asked with the tool reads with its choices.
+ */
+export function transcriptOf(record: Pick<DesignRecord, 'id' | 'repository' | 'topic' | 'kit' | 'model' | 'createdAt'>, messages: readonly DesignMessage[], title: string, finishedAt: string): string {
+    const lines = [
+        `# ${title}`,
+        '',
+        `- Topic: ${record.topic.replace(/\s+/g, ' ').trim()}`,
+        `- Method: ${record.kit ?? 'design'}`,
+        ...(record.model ? [`- Model: ${record.model}`] : []),
+        `- Repository: ${record.repository}`,
+        `- Session: ${record.id}, from ${record.createdAt} to ${finishedAt}`,
+        '',
+        'The conversation as it went, kept as it is: a source, never changed.',
+    ];
+    for (const message of messages) {
+        if (message.role === 'user') {
+            lines.push('', '---', '', '## Person', '', message.text);
+            continue;
+        }
+        if (!message.text && !message.tools.length) continue;
+        lines.push('', '## Agent');
+        if (message.tools.length) lines.push('', ...message.tools.map((tool) => `- _${tool.tool}_ ${tool.title}`.trimEnd()));
+        if (message.text) lines.push('', message.text);
+    }
+    return `${lines.join('\n').trim()}\n`;
 }
 
 /** A short line for what a tool did: the file it wrote, the command it ran, the question it asked. */
