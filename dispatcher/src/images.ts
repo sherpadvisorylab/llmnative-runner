@@ -8,7 +8,7 @@ import { timingSafeEqual } from 'node:crypto';
 // registry of the runner (IMAGE_REGISTRY, ghcr.io/sherpadvisorylab by default) are touched.
 
 export interface MachineImage {
-    /** repository:tag */
+    /** repository:tag, or repository@id for an image left without a tag (an older version pulled over). */
     ref: string;
     repository: string;
     tag: string;
@@ -38,10 +38,13 @@ export class ImageError extends Error {
 
 export const DEFAULT_REGISTRY = 'ghcr.io/sherpadvisorylab';
 
-/** An image of the registry, by repository and tag: `ghcr.io/sherpadvisorylab/playbook-agent:0.11.0`. */
+/**
+ * An image of the registry, by repository and tag (`ghcr.io/sherpadvisorylab/playbook-agent:0.11.0`)
+ * or, left without a tag, by repository and id (`…/playbook-designer@01ce418d87d9`).
+ */
 export function imagePattern(registry: string): RegExp {
     const escaped = registry.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`^${escaped}/playbook-[a-z0-9-]+:[A-Za-z0-9._-]{1,64}$`);
+    return new RegExp(`^${escaped}/playbook-[a-z0-9-]+(:[A-Za-z0-9._-]{1,64}|@[0-9a-f]{12,64})$`);
 }
 
 const run = (command: string, args: string[]) => new Promise<{ code: number; output: string }>((resolve) => {
@@ -70,8 +73,9 @@ export function dockerImages(options: { registry: string; inUse: () => Promise<s
             for (const line of listed.output.split('\n')) {
                 try {
                     const image = JSON.parse(line) as { Repository: string; Tag: string; ID: string; Size: string; CreatedAt: string };
-                    if (!image.Repository.startsWith(prefix) || image.Tag === '<none>') continue;
-                    const ref = `${image.Repository}:${image.Tag}`;
+                    if (!image.Repository.startsWith(prefix)) continue;
+                    // An image left without a tag (a new version pulled over it) is known by its id.
+                    const ref = image.Tag === '<none>' ? `${image.Repository}@${image.ID}` : `${image.Repository}:${image.Tag}`;
                     found.set(ref, { ref, repository: image.Repository, tag: image.Tag, present: true, inUse: used.has(ref), id: image.ID, size: image.Size, created: image.CreatedAt });
                 } catch {
                     // Not a line of the list.
@@ -90,7 +94,14 @@ export function dockerImages(options: { registry: string; inUse: () => Promise<s
         },
         async remove(ref) {
             if ((await options.inUse()).includes(ref)) throw new ImageError('in use', 409);
-            const removed = await run(command, ['rmi', ref]);
+            // An image without a tag goes by its id, and only one that is listed as such.
+            let target = ref;
+            if (ref.includes('@')) {
+                const listed = await this.list();
+                if (!listed.some((image) => image.ref === ref && image.tag === '<none>')) throw new ImageError('not found', 404);
+                target = ref.slice(ref.indexOf('@') + 1);
+            }
+            const removed = await run(command, ['rmi', target]);
             // A container still made from it (a paused design session, say) keeps it.
             if (removed.code !== 0) throw new ImageError(removed.output.trim().split('\n').pop() || 'docker rmi failed', 409);
         },

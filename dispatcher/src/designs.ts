@@ -236,10 +236,22 @@ export class DesignSessions {
             return;
         }
         this.save();
+        // The agent asked with its question tool (choices, BMAD does): the message is the answer.
+        const asked = await this.pendingQuestion(record);
+        if (asked) {
+            await this.call(record, 'POST', `/question/${asked.id}/reply`, { answers: answersOf(asked.questions, text) });
+            return;
+        }
         await this.call(record, 'POST', `/session/${record.session}/prompt_async`, {
             parts: [{ type: 'text', text }],
             ...(record.model ? { model: { providerID: record.model.split('/')[0], modelID: record.model.slice(record.model.indexOf('/') + 1) } } : {}),
         });
+    }
+
+    /** The question the agent of the session is waiting on, if any (an older opencode has none). */
+    private async pendingQuestion(record: DesignRecord): Promise<QuestionRequest | undefined> {
+        const pending = await this.call<QuestionRequest[]>(record, 'GET', '/question').catch(() => []);
+        return (Array.isArray(pending) ? pending : []).find((request) => request.sessionID === record.session);
     }
 
     /** The conversation so far, from opencode; the first message of the person is the topic. */
@@ -253,7 +265,10 @@ export class DesignSessions {
             role: message.info.role,
             text: message.info.role === 'user' && index === 0
                 ? record.topic
-                : message.parts.filter((part) => part.type === 'text' && !part.synthetic).map((part) => part.text ?? '').join('\n\n').trim()
+                : message.parts
+                    // A question asked with the tool reads as the agent wrote it, with its choices.
+                    .map((part) => (part.type === 'text' && !part.synthetic ? part.text ?? '' : part.type === 'tool' && part.tool === 'question' ? questionText((part.state?.input?.questions ?? []) as Question[]) : ''))
+                    .filter(Boolean).join('\n\n').trim()
                     // A reply that failed says why.
                     || (message.info.error ? `⚠ ${errorText(message.info.error)}` : ''),
             tools: message.parts.filter((part) => part.type === 'tool').map((part) => ({ tool: part.tool ?? '', title: toolTitle(part.state) })),
@@ -469,7 +484,17 @@ export class DesignSessions {
                         pending = pending.slice(end + 2);
                         const data = block.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('');
                         if (!data) continue;
-                        const event = designEventOf(JSON.parse(data), record.session ?? '', roles);
+                        const parsed = JSON.parse(data) as OpencodeEvent;
+                        const request = parsed.type === 'question.asked' ? parsed.properties as unknown as QuestionRequest : undefined;
+                        if (request && request.sessionID === record.session) {
+                            // The agent waits on the person: its question in the chat, and the turn is over
+                            // for the studio (the next message answers it). Waiting is no work.
+                            this.emit(record.id, { type: 'text', message: request.tool?.messageID ?? request.id, part: `question-${request.id}`, text: questionText(request.questions) });
+                            this.count(record, false);
+                            this.emit(record.id, { type: 'busy', busy: false });
+                            continue;
+                        }
+                        const event = designEventOf(parsed, record.session ?? '', roles);
                         if (event?.type === 'busy') this.count(record, event.busy);
                         if (event) this.emit(record.id, event);
                     }
@@ -500,10 +525,44 @@ export function errorText(error: { name?: string; data?: { message?: string } } 
     return (inner ? inner.replace(/\\"/g, '"') : message).slice(0, 500);
 }
 
-/** A short line for what a tool did: the file it wrote, the command it ran. */
+/** A short line for what a tool did: the file it wrote, the command it ran, the question it asked. */
 function toolTitle(state?: { input?: Record<string, unknown>; title?: string }): string {
     const input = state?.input ?? {};
-    return String(state?.title || input.filePath || input.path || input.command || input.pattern || input.name || '').slice(0, 160);
+    const question = Array.isArray(input.questions) ? (input.questions as Question[])[0]?.header : undefined;
+    return String(question || state?.title || input.filePath || input.path || input.command || input.pattern || input.name || '').slice(0, 160);
+}
+
+/** A question of the question tool of opencode: its choices, one or several. */
+export type Question = { question: string; header?: string; options?: Array<{ label: string; description?: string }>; multiple?: boolean };
+type QuestionRequest = { id: string; sessionID: string; questions: Question[]; tool?: { messageID?: string } };
+
+/** The questions as the chat shows them: each with its choices, numbered (an answer may be the number). */
+export function questionText(questions: readonly Question[]): string {
+    return questions.map((question) => [
+        question.header ? `**${question.header}** · ${question.question}` : question.question,
+        ...(question.options ?? []).map((option, index) => `${index + 1}. ${option.label}${option.description ? ` · ${option.description}` : ''}`),
+    ].join('\n')).join('\n\n');
+}
+
+/**
+ * The answers to the questions from one message: by number ("2", "1, 3" when several may be chosen) or
+ * by the label of a choice, otherwise the words of the person as they are. Several questions take one
+ * line each when the message has as many lines, else the whole message each.
+ */
+export function answersOf(questions: readonly Question[], text: string): string[][] {
+    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+    return questions.map((question, index) => {
+        const said = questions.length > 1 && lines.length === questions.length ? lines[index] : text.trim();
+        const options = question.options ?? [];
+        const plain = (label: string) => label.toLowerCase().replace(/\s*\(recommended\)\s*$/, '').trim();
+        const numbers = said.split(/\s*,\s*|\s+/).filter(Boolean);
+        if (numbers.length && numbers.every((value) => /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= options.length)
+            && (question.multiple || numbers.length === 1)) {
+            return numbers.map((value) => options[Number(value) - 1].label);
+        }
+        const named = options.find((option) => plain(option.label) === plain(said));
+        return [named ? named.label : said];
+    });
 }
 
 type OpencodeEvent = { type: string; properties?: Record<string, unknown> };
