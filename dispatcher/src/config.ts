@@ -41,6 +41,8 @@ export interface MachineConfig {
     version: string;
     /** The registry of the images of the runner: only these are listed, pulled and removed. */
     registry: string;
+    /** The images of the other services of the runner it manages too (its memory): repositories without a tag. */
+    imageServices: string[];
     /** The file with the admin token of the runner (written by the studio); none: no admin routes. */
     adminTokenFile: string;
     /** The design sessions: the images of the design agents, one per kit (none: no design agent on this runner), how many at once on the machine, when they pause and go. */
@@ -95,6 +97,7 @@ export function readMachineConfig(env: Vars = process.env): MachineConfig {
         network: env.AGENT_NETWORK || undefined,
         version: env.PLAYBOOK_RUNNER_VERSION || 'dev',
         registry: (env.IMAGE_REGISTRY || 'ghcr.io/sherpadvisorylab').replace(/\/+$/, ''),
+        imageServices: (env.IMAGE_SERVICES ?? 'supermemory/supermemory').split(/[\s,]+/).filter(Boolean),
         adminTokenFile: env.ADMIN_TOKEN_FILE || '/admin/token',
         design: {
             // The design agents of the runner, one image per kit (DESIGN_IMAGES, space or comma

@@ -61,13 +61,13 @@ async function main() {
 
     // The images the runner uses: those of its settings and the one of its own container.
     const own = await ownImage(hostname());
-    const images = dockerImages({ registry: machine.registry, inUse: async () => [machine.image, ...machine.design.images, ...(own ? [own] : [])] });
+    const images = dockerImages({ registry: machine.registry, services: machine.imageServices, inUse: async () => [machine.image, ...machine.design.images, ...(own ? [own] : [])] });
     const server = createRunnerServer(tenants, {
         legacy: legacy?.id,
         log,
         designs: kits,
         version: machine.version,
-        admin: { token: () => adminToken(machine.adminTokenFile), images, registry: machine.registry },
+        admin: { token: () => adminToken(machine.adminTokenFile), images, registry: machine.registry, services: machine.imageServices },
     });
     server.listen(machine.port, async () => {
         log('runner listening', { version: machine.version, admin: !!adminToken(machine.adminTokenFile), port: machine.port, image: machine.image, maxParallel: machine.maxParallel, companiesDir: machine.companiesDir, designKits: kits.map((kit) => kit.kit), designNetwork: network ?? 'published on 127.0.0.1' });

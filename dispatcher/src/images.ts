@@ -5,7 +5,8 @@ import { timingSafeEqual } from 'node:crypto';
 // The images of the runner on its machine: which are there, which it uses, pulling a new version and
 // removing an old one. Only the person who manages the machine does this, with the admin token of the
 // runner (a file on the machine, written by the studio: never a company token). Only images of the
-// registry of the runner (IMAGE_REGISTRY, ghcr.io/sherpadvisorylab by default) are touched.
+// registry of the runner (IMAGE_REGISTRY, ghcr.io/sherpadvisorylab by default) are touched, and the
+// images of the other services of the runner (IMAGE_SERVICES: supermemory/supermemory, its memory).
 
 export interface MachineImage {
     /** repository:tag, or repository@id for an image left without a tag (an older version pulled over). */
@@ -53,10 +54,14 @@ export const DEFAULT_REGISTRY = 'ghcr.io/sherpadvisorylab';
  * An image of the registry, by repository and tag (`ghcr.io/sherpadvisorylab/playbook-agent:0.11.0`)
  * or, left without a tag, by repository and id (`…/playbook-designer@01ce418d87d9`).
  */
-export function imagePattern(registry: string): RegExp {
-    const escaped = registry.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`^${escaped}/playbook-[a-z0-9-]+(:[A-Za-z0-9._-]{1,64}|@[0-9a-f]{12,64})$`);
+export function imagePattern(registry: string, services: readonly string[] = []): RegExp {
+    const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const repositories = [`${escape(registry)}/playbook-[a-z0-9-]+`, ...services.map(escape)].join('|');
+    return new RegExp(`^(${repositories})(:[A-Za-z0-9._-]{1,64}|@[0-9a-f]{12,64})$`);
 }
+
+/** Whether a repository is one the runner manages: of its registry, or of one of its services. */
+const managed = (repository: string, registry: string, services: readonly string[]) => repository.startsWith(`${registry}/playbook-`) || services.includes(repository);
 
 const run = (command: string, args: string[]) => new Promise<{ code: number; output: string }>((resolve) => {
     const child = spawn(command, args, { env: { PATH: process.env.PATH, DOCKER_HOST: process.env.DOCKER_HOST }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -72,9 +77,10 @@ const run = (command: string, args: string[]) => new Promise<{ code: number; out
  * The images of the machine through its Docker: those of the registry, and those the runner uses
  * (`inUse`: the images of its settings and the one its own container runs).
  */
-export function dockerImages(options: { registry: string; inUse: () => Promise<string[]>; docker?: string }): ImageHost {
+export function dockerImages(options: { registry: string; services?: readonly string[]; inUse: () => Promise<string[]>; docker?: string }): ImageHost {
     const command = options.docker ?? 'docker';
-    const prefix = `${options.registry}/playbook-`;
+    const services = options.services ?? [];
+    const ours = (repository: string) => managed(repository, options.registry, services);
     return {
         async list() {
             const listed = await run(command, ['image', 'ls', '--format', '{{json .}}']);
@@ -98,7 +104,7 @@ export function dockerImages(options: { registry: string; inUse: () => Promise<s
             for (const line of listed.output.split('\n')) {
                 try {
                     const image = JSON.parse(line) as { Repository: string; Tag: string; ID: string; Size: string; CreatedAt: string };
-                    if (!image.Repository.startsWith(prefix)) continue;
+                    if (!ours(image.Repository)) continue;
                     // An image left without a tag (a new version pulled over it) is known by its id.
                     const ref = image.Tag === '<none>' ? `${image.Repository}@${image.ID}` : `${image.Repository}:${image.Tag}`;
                     const held = holders(ref, image.ID);
@@ -108,7 +114,7 @@ export function dockerImages(options: { registry: string; inUse: () => Promise<s
                 }
             }
             for (const ref of used) {
-                if (found.has(ref) || !ref.startsWith(prefix)) continue;
+                if (found.has(ref) || !ours(ref.slice(0, ref.lastIndexOf(':')))) continue;
                 const at = ref.lastIndexOf(':');
                 found.set(ref, { ref, repository: ref.slice(0, at), tag: ref.slice(at + 1), present: false, inUse: true });
             }

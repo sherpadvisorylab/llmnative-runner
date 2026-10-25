@@ -58,6 +58,8 @@ export interface RunnerAdmin {
     token: () => string | undefined;
     images: ImageHost;
     registry: string;
+    /** The repositories of the other services of the runner (its memory). */
+    services?: string[];
 }
 
 export function createRunnerServer(tenants: Tenants, options: { legacy?: string; log: (line: string, details?: Record<string, unknown>) => void; designs?: DesignKit[]; version?: string; admin?: RunnerAdmin }) {
@@ -151,8 +153,8 @@ async function images(admin: RunnerAdmin, request: IncomingMessage, response: Se
     if (request.method === 'POST' && (path === '/images/pull' || path === '/images/remove')) {
         const body = JSON.parse((await readBody(request)) || '{}') as { images?: unknown };
         const refs = Array.isArray(body.images) ? body.images.filter((ref): ref is string => typeof ref === 'string') : [];
-        const valid = imagePattern(admin.registry);
-        if (!refs.length || refs.length > 20 || !refs.every((ref) => valid.test(ref))) return send(response, 400, { error: `images of ${admin.registry}/playbook-* only` });
+        const valid = imagePattern(admin.registry, admin.services);
+        if (!refs.length || refs.length > 20 || !refs.every((ref) => valid.test(ref))) return send(response, 400, { error: `images of ${[`${admin.registry}/playbook-*`, ...(admin.services ?? [])].join(', ')} only` });
         const pull = path === '/images/pull';
         const results = [];
         for (const ref of refs) {
