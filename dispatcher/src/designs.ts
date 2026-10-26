@@ -63,7 +63,18 @@ interface DesignRecord {
 export type DesignView = Pick<DesignRecord, 'id' | 'name' | 'repository' | 'topic' | 'kit' | 'model' | 'status' | 'createdAt' | 'lastActive' | 'pullRequest' | 'error' | 'workSeconds'>;
 
 /** A message of the conversation, for the studio. */
-export type DesignMessage = { id: string; role: 'user' | 'assistant'; text: string; tools: Array<{ tool: string; title: string }> };
+/**
+ * A part of a reply of the agent, in the order it came: its reasoning (with how long it took), its
+ * text, a step, the questions it asked with the question tool (with the answers, once given).
+ */
+export type DesignMessagePart =
+    | { type: 'reasoning'; id: string; text: string; seconds?: number }
+    | { type: 'text'; id: string; text: string }
+    | { type: 'tool'; id: string; tool: string; title: string }
+    | { type: 'questions'; id: string; questions: Question[]; answers?: string[][] };
+
+/** A message of a session; `parts` (from 0.12.8) is the reply as it came, `text` and `tools` what an older studio reads. */
+export type DesignMessage = { id: string; role: 'user' | 'assistant'; text: string; tools: Array<{ tool: string; title: string }>; parts?: DesignMessagePart[] };
 
 /** What happens in a session, as it happens. */
 export type DesignEvent =
@@ -351,7 +362,10 @@ export class DesignSessions {
     }
 
     private async liveMessages(record: DesignRecord): Promise<DesignMessage[]> {
-        type Part = { id: string; type: string; text?: string; synthetic?: boolean; tool?: string; state?: { input?: Record<string, unknown>; title?: string } };
+        type Part = {
+            id: string; type: string; text?: string; synthetic?: boolean; tool?: string; time?: { start?: number; end?: number };
+            state?: { status?: string; input?: Record<string, unknown>; title?: string; metadata?: { answers?: unknown } };
+        };
         const raw = await this.call<Array<{ info: { id: string; role: 'user' | 'assistant'; error?: { name?: string; data?: { message?: string } } }; parts: Part[] }>>(record, 'GET', `/session/${record.session}/message`);
         return raw.map((message, index) => ({
             id: message.info.id,
@@ -365,6 +379,7 @@ export class DesignSessions {
                     // A reply that failed says why.
                     || (message.info.error ? `⚠ ${errorText(message.info.error)}` : ''),
             tools: message.parts.filter((part) => part.type === 'tool').map((part) => ({ tool: part.tool ?? '', title: toolTitle(part.state) })),
+            ...(message.info.role === 'assistant' ? { parts: message.parts.flatMap((part) => messagePartOf(part)) } : {}),
         }));
     }
 
@@ -678,6 +693,24 @@ export function transcriptOf(record: Pick<DesignRecord, 'id' | 'repository' | 't
         if (message.text) lines.push('', message.text);
     }
     return `${lines.join('\n').trim()}\n`;
+}
+
+/** A part of a reply as the studio shows it again; the rest (step marks, empty reasoning) is left out. */
+function messagePartOf(part: { id: string; type: string; text?: string; synthetic?: boolean; tool?: string; time?: { start?: number; end?: number }; state?: { input?: Record<string, unknown>; title?: string; metadata?: { answers?: unknown } } }): DesignMessagePart[] {
+    if (part.type === 'reasoning') {
+        const { start, end } = part.time ?? {};
+        return part.text?.trim() ? [{ type: 'reasoning', id: part.id, text: part.text, ...(typeof start === 'number' && typeof end === 'number' ? { seconds: Math.max(0, Math.round((end - start) / 1000)) } : {}) }] : [];
+    }
+    if (part.type === 'text') return !part.synthetic && part.text?.trim() ? [{ type: 'text', id: part.id, text: part.text }] : [];
+    if (part.type !== 'tool') return [];
+    if (part.tool === 'question') {
+        const answers = part.state?.metadata?.answers;
+        return [{
+            type: 'questions', id: part.id, questions: (part.state?.input?.questions ?? []) as Question[],
+            ...(Array.isArray(answers) && answers.every((answer) => Array.isArray(answer)) ? { answers: (answers as unknown[][]).map((answer) => answer.map(String)) } : {}),
+        }];
+    }
+    return [{ type: 'tool', id: part.id, tool: part.tool ?? '', title: toolTitle(part.state) }];
 }
 
 /** A short line for what a tool did: the file it wrote, the command it ran, the question it asked. */
