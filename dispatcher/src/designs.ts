@@ -181,7 +181,7 @@ export class DesignSessions {
         const wanted = typeof input.id === 'string' ? input.id : '';
         if (wanted && (!/^[a-f0-9]{8}$/.test(wanted) || this.records.has(wanted))) throw new DesignError('id must be 8 hex digits, not taken', 400);
         const id = wanted || randomBytes(4).toString('hex');
-        if (!this.options.slots.take(`${this.options.company}/${id}`)) throw new DesignError('too many design sessions on this runner: try again later', 429);
+        if (!(await this.takeSlot(`${this.options.company}/${id}`, id))) throw new DesignError('too many design sessions on this runner: try again later', 429);
         const at = new Date(this.now()).toISOString();
         const record: DesignRecord = {
             id, name: this.nameFor(repository, topic, kit, at), repository, topic, kit, model, status: 'starting', createdAt: at, lastActive: at,
@@ -455,20 +455,43 @@ export class DesignSessions {
         for (const record of this.records.values()) {
             const idle = now - Date.parse(record.lastActive);
             if (record.status === 'active' && idle > this.options.idleMinutes * 60_000 && !(await this.busy(record))) {
-                this.upstream.get(record.id)?.abort();
-                this.upstream.delete(record.id);
-                await this.keepCopies(record);
-                await this.options.host.pause(record.container);
-                record.status = 'paused';
-                this.options.slots.release(this.slot(record));
-                this.save();
-                this.emit(record.id, { type: 'status', design: view(record) });
+                await this.pause(record);
                 this.options.log('design paused', { design: record.id });
             } else if (record.status === 'paused' && idle > this.options.keepDays * 86_400_000) {
                 await this.close(record, 'cancelled');
                 this.options.log('design removed after its days', { design: record.id });
             }
         }
+    }
+
+    /** Stops the container of a session and frees its slot: opencode keeps the conversation, a message wakes it up. */
+    private async pause(record: DesignRecord) {
+        this.upstream.get(record.id)?.abort();
+        this.upstream.delete(record.id);
+        await this.keepCopies(record);
+        await this.options.host.pause(record.container);
+        record.status = 'paused';
+        this.options.slots.release(this.slot(record));
+        this.save();
+        this.emit(record.id, { type: 'status', design: view(record) });
+    }
+
+    /**
+     * A slot for a session; when the runner is full, the session of this company left alone the
+     * longest (not working) is paused to make room. Sessions of other companies are never touched.
+     */
+    private async takeSlot(slot: string, except: string): Promise<boolean> {
+        if (this.options.slots.take(slot)) return true;
+        const idle = [...this.records.values()]
+            .filter((record) => record.status === 'active' && record.id !== except)
+            .sort((a, b) => Date.parse(a.lastActive) - Date.parse(b.lastActive));
+        for (const record of idle) {
+            if (await this.busy(record)) continue;
+            await this.pause(record);
+            this.options.log('design paused to make room', { design: record.id, for: except });
+            return this.options.slots.take(slot);
+        }
+        return false;
     }
 
     /** The skill a session starts with: the command of its kit (a session made before kits: the only one). */
@@ -502,7 +525,7 @@ export class DesignSessions {
     private async awake(id: string): Promise<DesignRecord> {
         const record = this.find(id);
         if (record.status === 'paused') {
-            if (!this.options.slots.take(this.slot(record))) throw new DesignError('too many design sessions on this runner: try again later', 429);
+            if (!(await this.takeSlot(this.slot(record), record.id))) throw new DesignError('too many design sessions on this runner: try again later', 429);
             record.address = await this.options.host.wake(record.container);
             await this.ready(record);
             record.status = 'active';

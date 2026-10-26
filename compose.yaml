@@ -7,18 +7,18 @@ name: playbook-runner
 
 services:
   dispatcher:
-    image: ${DISPATCHER_IMAGE:-ghcr.io/sherpadvisorylab/playbook-dispatcher:0.12.6}
+    image: ${DISPATCHER_IMAGE:-ghcr.io/sherpadvisorylab/playbook-dispatcher:0.12.7}
     build: ./dispatcher
     restart: unless-stopped
     environment:
       DATA_DIR: /data
       COMPANIES_DIR: /companies
       PORT: "8080"
-      AGENT_IMAGE: ${AGENT_IMAGE:-ghcr.io/sherpadvisorylab/playbook-agent:0.12.6}
+      AGENT_IMAGE: ${AGENT_IMAGE:-ghcr.io/sherpadvisorylab/playbook-agent:0.12.7}
       # Turns at once on the whole machine, every company together.
       MAX_PARALLEL: ${MAX_PARALLEL:-2}
       # The design agents, one image per kit, separated by spaces.
-      DESIGN_IMAGES: ${DESIGN_IMAGES:-ghcr.io/sherpadvisorylab/playbook-design-matt:0.12.6}
+      DESIGN_IMAGES: ${DESIGN_IMAGES:-ghcr.io/sherpadvisorylab/playbook-design-matt:0.12.7}
       # Design sessions at once on the whole machine (about 1 GB of RAM each while active).
       DESIGN_MAX_SESSIONS: ${DESIGN_MAX_SESSIONS:-2}
     volumes:
