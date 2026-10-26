@@ -33,6 +33,8 @@ RUN git clone --quiet --filter=blob:none "${SKILLS_REPOSITORY}" /tmp/skills \
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/playbook-designer
 COPY --chmod=0755 design-files.mjs /usr/local/bin/playbook-design-files
 COPY --chown=agent:agent opencode.json /home/agent/.config/opencode/opencode.json
+# How to talk with the studio: questions with choices through the question tool.
+COPY --chown=agent:agent AGENTS.md /home/agent/.config/opencode/AGENTS.md
 
 USER agent
 WORKDIR /work

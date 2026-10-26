@@ -70,6 +70,10 @@ export type DesignEvent =
     | { type: 'delta'; message: string; part: string; text: string }
     | { type: 'text'; message: string; part: string; text: string }
     | { type: 'tool'; message: string; part: string; tool: string; status: string; title: string }
+    /** The reasoning of the model: a delta, or whole (with how long it took, once it is over). */
+    | { type: 'reasoning'; message: string; part: string; text: string; delta?: boolean; seconds?: number }
+    /** The agent asked with its question tool and waits: the next message answers. */
+    | { type: 'questions'; message: string; part: string; questions: Question[] }
     | { type: 'busy'; busy: boolean }
     | { type: 'error'; message: string }
     | { type: 'status'; design: DesignView };
@@ -218,8 +222,12 @@ export class DesignSessions {
      * A message of the person; a paused session wakes up first. The first one runs the skill with
      * the message as its argument (usually the topic), the next ones are plain messages.
      */
-    async send(id: string, input: { text?: unknown; model?: unknown }): Promise<void> {
+    async send(id: string, input: { text?: unknown; model?: unknown; answers?: unknown }): Promise<void> {
         const text = String(input.text ?? '').trim();
+        // The answers to the questions of the agent as the person chose them, one list per question.
+        const answers = Array.isArray(input.answers) && input.answers.every((answer) => Array.isArray(answer))
+            ? (input.answers as unknown[][]).map((answer) => answer.map(String))
+            : undefined;
         if (!text) throw new DesignError('text is required', 400);
         const model = input.model ? String(input.model) : undefined;
         if (model && !MODEL.test(model)) throw new DesignError('model must be provider/model', 400);
@@ -245,7 +253,8 @@ export class DesignSessions {
         // The agent asked with its question tool (choices, BMAD does): the message is the answer.
         const asked = await this.pendingQuestion(record);
         if (asked) {
-            await this.call(record, 'POST', `/question/${asked.id}/reply`, { answers: answersOf(asked.questions, text) });
+            const chosen = answers?.length === asked.questions.length ? answers : answersOf(asked.questions, text);
+            await this.call(record, 'POST', `/question/${asked.id}/reply`, { answers: chosen });
             return;
         }
         await this.call(record, 'POST', `/session/${record.session}/prompt_async`, {
@@ -581,9 +590,9 @@ export class DesignSessions {
                         const parsed = JSON.parse(data) as OpencodeEvent;
                         const request = parsed.type === 'question.asked' ? parsed.properties as unknown as QuestionRequest : undefined;
                         if (request && request.sessionID === record.session) {
-                            // The agent waits on the person: its question in the chat, and the turn is over
-                            // for the studio (the next message answers it). Waiting is no work.
-                            this.emit(record.id, { type: 'text', message: request.tool?.messageID ?? request.id, part: `question-${request.id}`, text: questionText(request.questions) });
+                            // The agent waits on the person: its questions in the chat, and the turn is over
+                            // for the studio (the next message answers them). Waiting is no work.
+                            this.emit(record.id, { type: 'questions', message: request.tool?.messageID ?? request.id, part: `question-${request.id}`, questions: request.questions });
                             this.count(record, false);
                             this.emit(record.id, { type: 'busy', busy: false });
                             continue;
@@ -692,8 +701,8 @@ type OpencodeEvent = { type: string; properties?: Record<string, unknown> };
 
 /**
  * An event of opencode as the studio sees it, when it is about this session; otherwise undefined.
- * `kinds` keeps the type of each part as it is announced: only the text of the reply streams to the
- * studio, never the reasoning of the model (a part of its own, streamed the same way).
+ * `kinds` keeps the type of each part as it is announced: the text of the reply and the reasoning of
+ * the model stream to the studio each as itself, never one into the other.
  */
 export function designEventOf(event: OpencodeEvent, session: string, roles: Map<string, string>, kinds: Map<string, string> = new Map()): DesignEvent | undefined {
     const properties = (event.properties ?? {}) as Record<string, any>;
@@ -707,7 +716,8 @@ export function designEventOf(event: OpencodeEvent, session: string, roles: Map<
         }
         case 'message.part.delta':
             if (properties.sessionID !== session || properties.field !== 'text' || roles.get(properties.messageID) === 'user') return undefined;
-            // A part not known as text (the reasoning, or one not announced yet) does not stream: its text comes whole when it is updated.
+            // The reasoning streams apart from the reply; a part not announced yet does not stream (its text comes whole when it is updated).
+            if (kinds.get(properties.partID) === 'reasoning') return { type: 'reasoning', message: properties.messageID, part: properties.partID, text: String(properties.delta ?? ''), delta: true };
             if (kinds.get(properties.partID) !== 'text') return undefined;
             return { type: 'delta', message: properties.messageID, part: properties.partID, text: String(properties.delta ?? '') };
         case 'message.part.updated': {
@@ -715,6 +725,13 @@ export function designEventOf(event: OpencodeEvent, session: string, roles: Map<
             if (part?.sessionID !== session || roles.get(part.messageID) === 'user') return undefined;
             kinds.set(part.id, part.synthetic ? 'synthetic' : part.type);
             if (part.type === 'text' && !part.synthetic) return { type: 'text', message: part.messageID, part: part.id, text: String(part.text ?? '') };
+            if (part.type === 'reasoning') {
+                const { start, end } = part.time ?? {};
+                return {
+                    type: 'reasoning', message: part.messageID, part: part.id, text: String(part.text ?? ''),
+                    ...(typeof start === 'number' && typeof end === 'number' ? { seconds: Math.max(0, Math.round((end - start) / 1000)) } : {}),
+                };
+            }
             if (part.type === 'tool') return { type: 'tool', message: part.messageID, part: part.id, tool: String(part.tool ?? ''), status: String(part.state?.status ?? ''), title: toolTitle(part.state) };
             return undefined;
         }
