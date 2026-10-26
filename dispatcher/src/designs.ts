@@ -560,6 +560,7 @@ export class DesignSessions {
         const abort = new AbortController();
         this.upstream.set(record.id, abort);
         const roles = new Map<string, string>();
+        const kinds = new Map<string, string>();
         void (async () => {
             try {
                 const response = await this.fetch(`${record.address}/event`, {
@@ -587,7 +588,7 @@ export class DesignSessions {
                             this.emit(record.id, { type: 'busy', busy: false });
                             continue;
                         }
-                        const event = designEventOf(parsed, record.session ?? '', roles);
+                        const event = designEventOf(parsed, record.session ?? '', roles, kinds);
                         if (event?.type === 'busy') this.count(record, event.busy);
                         if (event) this.emit(record.id, event);
                     }
@@ -689,8 +690,12 @@ export function answersOf(questions: readonly Question[], text: string): string[
 
 type OpencodeEvent = { type: string; properties?: Record<string, unknown> };
 
-/** An event of opencode as the studio sees it, when it is about this session; otherwise undefined. */
-export function designEventOf(event: OpencodeEvent, session: string, roles: Map<string, string>): DesignEvent | undefined {
+/**
+ * An event of opencode as the studio sees it, when it is about this session; otherwise undefined.
+ * `kinds` keeps the type of each part as it is announced: only the text of the reply streams to the
+ * studio, never the reasoning of the model (a part of its own, streamed the same way).
+ */
+export function designEventOf(event: OpencodeEvent, session: string, roles: Map<string, string>, kinds: Map<string, string> = new Map()): DesignEvent | undefined {
     const properties = (event.properties ?? {}) as Record<string, any>;
     switch (event.type) {
         case 'message.updated': {
@@ -702,10 +707,13 @@ export function designEventOf(event: OpencodeEvent, session: string, roles: Map<
         }
         case 'message.part.delta':
             if (properties.sessionID !== session || properties.field !== 'text' || roles.get(properties.messageID) === 'user') return undefined;
+            // A part not known as text (the reasoning, or one not announced yet) does not stream: its text comes whole when it is updated.
+            if (kinds.get(properties.partID) !== 'text') return undefined;
             return { type: 'delta', message: properties.messageID, part: properties.partID, text: String(properties.delta ?? '') };
         case 'message.part.updated': {
             const part = properties.part;
             if (part?.sessionID !== session || roles.get(part.messageID) === 'user') return undefined;
+            kinds.set(part.id, part.synthetic ? 'synthetic' : part.type);
             if (part.type === 'text' && !part.synthetic) return { type: 'text', message: part.messageID, part: part.id, text: String(part.text ?? '') };
             if (part.type === 'tool') return { type: 'tool', message: part.messageID, part: part.id, tool: String(part.tool ?? ''), status: String(part.state?.status ?? ''), title: toolTitle(part.state) };
             return undefined;
