@@ -28,11 +28,26 @@ export class Deliveries {
 
 export type WebhookAction =
     | { kind: 'issue'; repository: string; number: number }
-    | { kind: 'repository'; repository: string }
+    | { kind: 'repository'; repository: string; sources?: string[] }
     | { kind: 'none' };
 
+/**
+ * The sources a push brings to the default branch: the folders of `sources/` with files added, e.g.
+ * `sources/conversations/2026-10-25-crm-bmad` (a file right under a kind, as a note, is its own source).
+ */
+export function sourcesOf(payload: { ref?: string; repository?: { default_branch?: string }; commits?: Array<{ added?: string[] }> }): string[] {
+    if (!payload.repository?.default_branch || payload.ref !== `refs/heads/${payload.repository.default_branch}`) return [];
+    const folders = new Set<string>();
+    for (const path of (payload.commits ?? []).flatMap((commit) => commit.added ?? [])) {
+        const parts = path.split('/');
+        if (parts[0] !== 'sources' || parts.length < 3) continue;
+        folders.add(parts.length >= 4 ? parts.slice(0, 3).join('/') : path);
+    }
+    return [...folders].sort();
+}
+
 /** What an event asks of the dispatcher. */
-export function actionOf(event: string | undefined, payload: { action?: string; issue?: { number: number; pull_request?: unknown }; repository?: { full_name: string } }): WebhookAction {
+export function actionOf(event: string | undefined, payload: { action?: string; issue?: { number: number; pull_request?: unknown }; repository?: { full_name: string; default_branch?: string }; ref?: string; commits?: Array<{ added?: string[] }> }): WebhookAction {
     const repository = payload.repository?.full_name;
     if (!repository) return { kind: 'none' };
     if (event === 'issues' && payload.issue && !payload.issue.pull_request) {
@@ -40,7 +55,10 @@ export function actionOf(event: string | undefined, payload: { action?: string; 
         if (payload.action === 'closed') return { kind: 'repository', repository };
         if (['opened', 'reopened', 'labeled', 'unlabeled', 'edited'].includes(payload.action ?? '')) return { kind: 'issue', repository, number: payload.issue.number };
     }
-    // A new version of the workflow, or a pause, comes with a push.
-    if (event === 'push') return { kind: 'repository', repository };
+    // A new version of the workflow, or a pause, comes with a push; a source merged too.
+    if (event === 'push') {
+        const sources = sourcesOf(payload);
+        return { kind: 'repository', repository, ...(sources.length ? { sources } : {}) };
+    }
     return { kind: 'none' };
 }

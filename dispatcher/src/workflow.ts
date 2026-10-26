@@ -17,6 +17,8 @@ export interface Workflow {
     human: string;
     blocked: string;
     agents: Record<string, { name: string; opencodeAgent: string; permissions: TokenPermissions }>;
+    /** Where a source merged in sources/ goes (the Source channel), when the workflow has it. */
+    sources?: { to: string; status: string };
     paused: boolean;
 }
 

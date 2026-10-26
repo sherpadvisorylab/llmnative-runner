@@ -337,6 +337,43 @@ export class Dispatcher {
         }
     }
 
+    /**
+     * The sources merged in sources/: one Action (an Epic) each for the agent of the Source channel, with
+     * its `needs:` and `status:` labels, unless one with the same title exists already. Nothing when the
+     * workflow has no Source channel.
+     */
+    async openSources(repository: string, folders: string[]): Promise<number[]> {
+        const opened: number[] = [];
+        try {
+            const workflow = await this.workflowOf(repository, true);
+            if (!workflow?.sources || !workflow.agents[workflow.sources.to]) {
+                if (folders.length) this.log('sources merged, no Source channel in the workflow', { repository, sources: folders });
+                return opened;
+            }
+            const status = `${workflow.statusPrefix}${workflow.sources.status}`;
+            const known = await this.github.request<Array<{ title: string }>>('GET', `/repos/${repository}/issues?state=all&labels=${encodeURIComponent(status)}&per_page=100`);
+            for (const folder of folders) {
+                const title = `Source: ${folder}`;
+                if (known.some((issue) => issue.title === title)) continue;
+                const body = [
+                    `A source was merged in \`${folder}\`. Digest it: the activities it holds, and the knowledge it settles proposed in the memory, each with its source.`,
+                    '',
+                    MARKER({ source: folder }),
+                ].join('\n');
+                const labels = [`${workflow.needsPrefix}${workflow.sources.to}`, status];
+                // An Action is an Epic; an organization without issue types gets the issue all the same.
+                const issue = await this.github.request<{ number: number }>('POST', `/repos/${repository}/issues`, { title, body, labels, type: 'Epic' })
+                    .catch(() => this.github.request<{ number: number }>('POST', `/repos/${repository}/issues`, { title, body, labels }));
+                opened.push(issue.number);
+                this.log('source opened', { repository, source: folder, issue: issue.number });
+                this.announce({ type: 'issue', at: new Date().toISOString(), repository, issue: issue.number, action: 'source' });
+            }
+        } catch (error) {
+            this.log('sources could not be opened', { repository, sources: folders, error: (error as Error).message });
+        }
+        return opened;
+    }
+
     async reconcileRepository(repository: string): Promise<void> {
         try {
             const workflow = await this.workflowOf(repository, true);
