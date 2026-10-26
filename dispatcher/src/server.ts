@@ -12,6 +12,7 @@ import { ImageError, imagePattern, isAdmin, type ImageHost } from './images.ts';
 //   POST /<company>/webhook            the webhook of its GitHub App
 //   GET  /<company>/state|events|output for its studio, with its DISPATCHER_TOKEN
 //   /<company>/designs[/<id>[/messages|events|files|finish]]  its design sessions, for its studio too
+//   POST /<company>/sources            the Actions of merged sources, for its studio
 //   /_admin/images[/pull|/remove]       the images of the machine, with the admin token of the runner
 // A dispatcher started with one company in its environment also answers at the root, as before.
 
@@ -135,6 +136,16 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                     stop();
                 });
                 return;
+            }
+            // The Actions of sources merged whose push was lost: opened on the request of its studio, never twice.
+            if (request.method === 'POST' && rest === '/sources') {
+                if (!tenant.config.studioToken) return send(response, 404, { error: 'studio access not configured' });
+                if (!fromStudio(tenant, request)) return send(response, 401, { error: 'bad token' });
+                const body = JSON.parse((await readBody(request)) || '{}') as { repository?: unknown; sources?: unknown };
+                const repository = String(body.repository ?? '');
+                const sources = Array.isArray(body.sources) ? body.sources.filter((source): source is string => typeof source === 'string' && /^sources\/[A-Za-z0-9._\/-]+$/.test(source) && !source.includes('..')) : [];
+                if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repository) || !sources.length) return send(response, 400, { error: 'repository and sources are required' });
+                return send(response, 200, { opened: await dispatcher.openSources(repository, sources) });
             }
             if (rest === '/designs' || rest.startsWith('/designs/')) {
                 if (!tenant.config.studioToken) return send(response, 404, { error: 'studio access not configured' });
