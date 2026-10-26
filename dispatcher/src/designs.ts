@@ -307,10 +307,41 @@ export class DesignSessions {
         return (Array.isArray(pending) ? pending : []).find((request) => request.sessionID === record.session);
     }
 
-    /** The conversation so far, from opencode; the first message of the person is the topic. */
+    /**
+     * The conversation so far, from opencode while the session is active (kept as a copy); the last copy
+     * once it is paused or ended, never waking it up. The first message of the person is the topic.
+     */
     async messages(id: string): Promise<DesignMessage[]> {
         const record = this.find(id);
-        if (record.status !== 'active') return [];
+        if (record.status !== 'active') {
+            try {
+                return JSON.parse(readFileSync(this.messagesOf(record), 'utf8')) as DesignMessage[];
+            } catch {
+                return [];
+            }
+        }
+        const messages = await this.liveMessages(record);
+        try {
+            mkdirSync(this.messagesOf(record).replace(/\/[^/]+$/, ''), { recursive: true });
+            writeFileSync(this.messagesOf(record), JSON.stringify(messages));
+        } catch {
+            // A copy only: the conversation is in the container.
+        }
+        return messages;
+    }
+
+    private messagesOf(record: DesignRecord) {
+        return `${this.options.file.replace(/\.json$/, '')}-files/${record.id}.messages.json`;
+    }
+
+    /** Before its container stops or goes: its documents and conversation kept, to be read without it. */
+    private async keepCopies(record: DesignRecord) {
+        if (record.status !== 'active') return;
+        await this.messages(record.id).catch(() => undefined);
+        await this.options.host.files(record.container).then((files) => this.keepFiles(record, files)).catch(() => undefined);
+    }
+
+    private async liveMessages(record: DesignRecord): Promise<DesignMessage[]> {
         type Part = { id: string; type: string; text?: string; synthetic?: boolean; tool?: string; state?: { input?: Record<string, unknown>; title?: string } };
         const raw = await this.call<Array<{ info: { id: string; role: 'user' | 'assistant'; error?: { name?: string; data?: { message?: string } } }; parts: Part[] }>>(record, 'GET', `/session/${record.session}/message`);
         return raw.map((message, index) => ({
@@ -417,6 +448,7 @@ export class DesignSessions {
             if (record.status === 'active' && idle > this.options.idleMinutes * 60_000 && !(await this.busy(record))) {
                 this.upstream.get(record.id)?.abort();
                 this.upstream.delete(record.id);
+                await this.keepCopies(record);
                 await this.options.host.pause(record.container);
                 record.status = 'paused';
                 this.options.slots.release(this.slot(record));
@@ -475,6 +507,7 @@ export class DesignSessions {
     }
 
     private async close(record: DesignRecord, status: DesignStatus) {
+        await this.keepCopies(record);
         if (record.status === 'active' || record.status === 'starting') this.options.slots.release(this.slot(record));
         this.upstream.get(record.id)?.abort();
         this.upstream.delete(record.id);
