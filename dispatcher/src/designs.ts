@@ -73,8 +73,14 @@ export type DesignMessagePart =
     | { type: 'tool'; id: string; tool: string; title: string }
     | { type: 'questions'; id: string; questions: Question[]; answers?: string[][] };
 
-/** A message of a session; `parts` (from 0.12.8) is the reply as it came, `text` and `tools` what an older studio reads. */
-export type DesignMessage = { id: string; role: 'user' | 'assistant'; text: string; tools: Array<{ tool: string; title: string }>; parts?: DesignMessagePart[] };
+/** What a reply of the agent cost, as opencode counts it: its tokens, its price in dollars, how long it took. */
+export type DesignUsage = { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; cost: number; seconds?: number; at?: string };
+
+/**
+ * A message of a session; `parts` (from 0.12.8) is the reply as it came, `text` and `tools` what an
+ * older studio reads, `usage` (from 0.12.9) what the reply cost.
+ */
+export type DesignMessage = { id: string; role: 'user' | 'assistant'; text: string; tools: Array<{ tool: string; title: string }>; parts?: DesignMessagePart[]; usage?: DesignUsage };
 
 /** What happens in a session, as it happens. */
 export type DesignEvent =
@@ -366,7 +372,12 @@ export class DesignSessions {
             id: string; type: string; text?: string; synthetic?: boolean; tool?: string; time?: { start?: number; end?: number };
             state?: { status?: string; input?: Record<string, unknown>; title?: string; metadata?: { answers?: unknown } };
         };
-        const raw = await this.call<Array<{ info: { id: string; role: 'user' | 'assistant'; error?: { name?: string; data?: { message?: string } } }; parts: Part[] }>>(record, 'GET', `/session/${record.session}/message`);
+        type Info = {
+            id: string; role: 'user' | 'assistant'; error?: { name?: string; data?: { message?: string } };
+            cost?: number; time?: { created?: number; completed?: number };
+            tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } };
+        };
+        const raw = await this.call<Array<{ info: Info; parts: Part[] }>>(record, 'GET', `/session/${record.session}/message`);
         return raw.map((message, index) => ({
             id: message.info.id,
             role: message.info.role,
@@ -379,7 +390,7 @@ export class DesignSessions {
                     // A reply that failed says why.
                     || (message.info.error ? `⚠ ${errorText(message.info.error)}` : ''),
             tools: message.parts.filter((part) => part.type === 'tool').map((part) => ({ tool: part.tool ?? '', title: toolTitle(part.state) })),
-            ...(message.info.role === 'assistant' ? { parts: message.parts.flatMap((part) => messagePartOf(part)) } : {}),
+            ...(message.info.role === 'assistant' ? { parts: message.parts.flatMap((part) => messagePartOf(part)), ...(message.info.tokens ? { usage: usageOf(message.info) } : {}) } : {}),
         }));
     }
 
@@ -679,6 +690,7 @@ export function transcriptOf(record: Pick<DesignRecord, 'id' | 'repository' | 't
         ...(record.model ? [`- Model: ${record.model}`] : []),
         `- Repository: ${record.repository}`,
         `- Session: ${record.id}, from ${record.createdAt} to ${finishedAt}`,
+        ...usageLine(messages),
         '',
         'The conversation as it went, kept as it is: a source, never changed.',
     ];
@@ -687,12 +699,55 @@ export function transcriptOf(record: Pick<DesignRecord, 'id' | 'repository' | 't
             lines.push('', '---', '', '## Person', '', message.text);
             continue;
         }
+        if (message.parts) {
+            // In order, with the answers the person gave to each question (clicked, never a message).
+            const said = message.parts.flatMap((part) => {
+                if (part.type === 'text') return [part.text.trim()];
+                if (part.type === 'tool') return [`- _${part.tool}_ ${part.title}`.trimEnd()];
+                if (part.type === 'questions') return [questionsWithAnswers(part.questions, part.answers)];
+                return [];
+            }).filter(Boolean);
+            if (said.length) lines.push('', '## Agent', '', said.join('\n\n'));
+            continue;
+        }
         if (!message.text && !message.tools.length) continue;
         lines.push('', '## Agent');
         if (message.tools.length) lines.push('', ...message.tools.map((tool) => `- _${tool.tool}_ ${tool.title}`.trimEnd()));
         if (message.text) lines.push('', message.text);
     }
     return `${lines.join('\n').trim()}\n`;
+}
+
+/** The questions asked with the tool, each followed by what the person answered (or that it was not). */
+export function questionsWithAnswers(questions: readonly Question[], answers: readonly string[][] | undefined): string {
+    return questions.map((question, index) => {
+        const answer = answers?.[index];
+        return `${questionText([question])}\n\n> **Answer:** ${answer?.length ? answer.join(', ') : '_(not answered)_'}`;
+    }).join('\n\n');
+}
+
+/** The usage of a reply from what opencode keeps of the message. */
+function usageOf(info: { cost?: number; time?: { created?: number; completed?: number }; tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } } }): DesignUsage {
+    const { created, completed } = info.time ?? {};
+    return {
+        input: info.tokens?.input ?? 0,
+        output: info.tokens?.output ?? 0,
+        reasoning: info.tokens?.reasoning ?? 0,
+        cacheRead: info.tokens?.cache?.read ?? 0,
+        cacheWrite: info.tokens?.cache?.write ?? 0,
+        cost: info.cost ?? 0,
+        ...(typeof created === 'number' && typeof completed === 'number' ? { seconds: Math.max(0, Math.round((completed - created) / 1000)) } : {}),
+        ...(typeof created === 'number' ? { at: new Date(created).toISOString() } : {}),
+    };
+}
+
+/** The line of the transcript with what the whole session cost, when it is known. */
+function usageLine(messages: readonly DesignMessage[]): string[] {
+    const used = messages.flatMap((message) => (message.usage ? [message.usage] : []));
+    if (!used.length) return [];
+    const sum = (key: 'input' | 'output' | 'reasoning' | 'cacheRead' | 'cacheWrite') => used.reduce((total, usage) => total + usage[key], 0);
+    const cost = used.reduce((total, usage) => total + usage.cost, 0);
+    return [`- Usage: ${sum('input') + sum('cacheRead') + sum('cacheWrite')} tokens in (${sum('cacheRead')} from the cache), ${sum('output')} out (${sum('reasoning')} reasoning), $${cost.toFixed(2)}`];
 }
 
 /** A part of a reply as the studio shows it again; the rest (step marks, empty reasoning) is left out. */

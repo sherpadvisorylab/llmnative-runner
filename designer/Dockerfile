@@ -35,6 +35,9 @@ COPY --chmod=0755 design-files.mjs /usr/local/bin/playbook-design-files
 COPY --chown=agent:agent opencode.json /home/agent/.config/opencode/opencode.json
 # How to talk with the studio: questions with choices through the question tool.
 COPY --chown=agent:agent AGENTS.md /home/agent/.config/opencode/AGENTS.md
+# The brief of the design (docs/BRIEF.md): the method writes a glossary and ADRs only, the brief keeps
+# every other decision of the conversation.
+COPY --chown=agent:agent skills/design-brief /home/agent/.config/opencode/skills/design-brief
 
 USER agent
 WORKDIR /work
