@@ -79,7 +79,7 @@ export type DesignMessagePart =
     | { type: 'questions'; id: string; questions: Question[]; answers?: string[][] };
 
 /** What a reply of the agent cost, as opencode counts it: its tokens, its price in dollars, how long it took. */
-export type DesignUsage = { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; cost: number; seconds?: number; at?: string };
+export type DesignUsage = { model?: string; input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; cost: number; seconds?: number; at?: string };
 
 /**
  * A message of a session; `parts` (from 0.12.8) is the reply as it came, `text` and `tools` what an
@@ -760,9 +760,10 @@ export function questionsWithAnswers(questions: readonly Question[], answers: re
 }
 
 /** The usage of a reply from what opencode keeps of the message. */
-function usageOf(info: { cost?: number; time?: { created?: number; completed?: number }; tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } } }): DesignUsage {
+function usageOf(info: { cost?: number; modelID?: string; time?: { created?: number; completed?: number }; tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } } }): DesignUsage {
     const { created, completed } = info.time ?? {};
     return {
+        ...(info.modelID ? { model: info.modelID } : {}),
         input: info.tokens?.input ?? 0,
         output: info.tokens?.output ?? 0,
         reasoning: info.tokens?.reasoning ?? 0,
