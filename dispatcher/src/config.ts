@@ -29,6 +29,8 @@ export interface MachineConfig {
     dataDir: string;
     /** Where the files of the companies are: one folder each, with its .env. */
     companiesDir: string;
+    /** Where the studio sends them (`/_admin/companies`): in the data of the dispatcher, ahead of `companiesDir`. */
+    pushedDir: string;
     image: string;
     /** Turns at once on the whole machine, every company together. */
     maxParallel: number;
@@ -88,6 +90,7 @@ export function readMachineConfig(env: Vars = process.env): MachineConfig {
         port: positive(env, 'PORT', 8080),
         dataDir: env.DATA_DIR || '/data',
         companiesDir: env.COMPANIES_DIR || '/companies',
+        pushedDir: `${env.DATA_DIR || '/data'}/companies`,
         image: env.AGENT_IMAGE || 'ghcr.io/sherpadvisorylab/playbook-agent:1.19.3',
         maxParallel: positive(env, 'MAX_PARALLEL', 2),
         turnTimeout: positive(env, 'TURN_TIMEOUT', 3600),

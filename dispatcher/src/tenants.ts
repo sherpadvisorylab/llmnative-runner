@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { COMPANY_ID_PATTERN, ConfigError, parseEnvFile, readCompanyConfig, type CompanyConfig, type MachineConfig } from './config.ts';
 import { Dispatcher, type FailureStore, type Log } from './dispatcher.ts';
@@ -114,6 +114,50 @@ export function readCompanyFiles(dir: string): Array<{ id: string; vars: Record<
 }
 
 /**
+ * The .env of every company of the machine: the folder of the machine, and the one the studio sends
+ * to (in the data of the dispatcher), which wins for a company in both: it is the newer way.
+ */
+export function readAllCompanyFiles(machine: Pick<MachineConfig, 'companiesDir' | 'pushedDir'>): Array<{ id: string; vars: Record<string, string>; version: string; sent: boolean }> {
+    const sent = readCompanyFiles(machine.pushedDir).map((file) => ({ ...file, version: `sent-${file.version}`, sent: true }));
+    const placed = readCompanyFiles(machine.companiesDir).filter((file) => !sent.some((other) => other.id === file.id)).map((file) => ({ ...file, sent: false }));
+    return [...sent, ...placed];
+}
+
+/**
+ * The .env the studio sends for a company, checked as the runner will read it, then written whole
+ * (a temporary file renamed, readable by the dispatcher only). The secret of the webhook is of the
+ * runner when the studio has none (set by hand, docs/runner-setup.md §6.3): kept, not lost.
+ */
+export function writeSentCompany(machine: Pick<MachineConfig, 'companiesDir' | 'pushedDir'>, id: string, text: string): { names: string[]; kept: string[] } {
+    if (!COMPANY_ID_PATTERN.test(id)) throw new ConfigError(`${id}: not a company id`);
+    const vars = parseEnvFile(text);
+    const kept: string[] = [];
+    const current = readAllCompanyFiles(machine).find((file) => file.id === id);
+    let body = text.endsWith('\n') ? text : `${text}\n`;
+    if (!vars.GITHUB_WEBHOOK_SECRET && current?.vars.GITHUB_WEBHOOK_SECRET) {
+        vars.GITHUB_WEBHOOK_SECRET = current.vars.GITHUB_WEBHOOK_SECRET;
+        body += `GITHUB_WEBHOOK_SECRET=${current.vars.GITHUB_WEBHOOK_SECRET}\n`;
+        kept.push('GITHUB_WEBHOOK_SECRET');
+    }
+    readCompanyConfig(id, vars);
+    const dir = join(machine.pushedDir, id);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const file = join(dir, '.env');
+    writeFileSync(`${file}.tmp`, body, { mode: 0o600 });
+    renameSync(`${file}.tmp`, file);
+    return { names: Object.keys(vars), kept };
+}
+
+/** Takes off the .env the studio sent for a company; false when there was none (a file of the machine stays). */
+export function removeSentCompany(machine: Pick<MachineConfig, 'pushedDir'>, id: string): boolean {
+    if (!COMPANY_ID_PATTERN.test(id)) return false;
+    const file = join(machine.pushedDir, id, '.env');
+    if (!existsSync(file)) return false;
+    rmSync(file);
+    return true;
+}
+
+/**
  * The companies of the runner, kept in step with their folder: a new .env adds a company, a changed
  * one reloads it, a removed one takes it off. A company whose .env is wrong is skipped and said so.
  */
@@ -137,7 +181,7 @@ export class Tenants {
     }
 
     /** Reads the folder again; returns the companies added or reloaded, to start them. */
-    sync(files = readCompanyFiles(this.deps.machine.companiesDir)): Tenant[] {
+    sync(files: Array<{ id: string; vars: Record<string, string>; version: string }> = readAllCompanyFiles(this.deps.machine)): Tenant[] {
         const started: Tenant[] = [];
         const seen = new Set<string>();
         for (const config of this.fixed) {

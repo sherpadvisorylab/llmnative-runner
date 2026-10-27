@@ -1,6 +1,6 @@
 import { readLegacyCompany, readCompanyConfig, readMachineConfig } from './config.ts';
 import { appJwt, retryingFetch } from './github.ts';
-import { readCompanyFiles } from './tenants.ts';
+import { readAllCompanyFiles } from './tenants.ts';
 
 // Points the webhook of the App of a company at this runner, with its secret:
 //   node src/setWebhook.ts <company> https://<runner>/<company>/webhook
@@ -14,7 +14,7 @@ async function main() {
         console.error('Usage: node src/setWebhook.ts <company> https://<runner>/<company>/webhook');
         process.exit(64);
     }
-    const file = readCompanyFiles(readMachineConfig().companiesDir).find((item) => item.id === company);
+    const file = readAllCompanyFiles(readMachineConfig()).find((item) => item.id === company);
     const legacy = readLegacyCompany();
     const config = file ? readCompanyConfig(company, file.vars) : legacy?.id === company ? legacy : null;
     if (!config) {

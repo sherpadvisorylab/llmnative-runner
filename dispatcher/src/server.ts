@@ -5,6 +5,7 @@ import { actionOf, validSignature } from './webhook.ts';
 import { DesignError, type DesignEvent } from './designs.ts';
 import type { DesignKit } from './docker.ts';
 import { ImageError, imagePattern, isAdmin, type ImageHost } from './images.ts';
+import { ConfigError } from './config.ts';
 
 // The HTTP side of the runner. Every route of a company lives under its path, `/<company>/…`, and is
 // served with that company only: its webhook secret, its studio token, its dispatcher.
@@ -14,6 +15,7 @@ import { ImageError, imagePattern, isAdmin, type ImageHost } from './images.ts';
 //   /<company>/designs[/<id>[/messages|events|files|finish]]  its design sessions, for its studio too
 //   POST /<company>/sources            the Actions of merged sources, for its studio
 //   /_admin/images[/pull|/remove]       the images of the machine, with the admin token of the runner
+//   /_admin/companies[/<company>]       the companies of the machine and the .env the studio sends for each
 // A dispatcher started with one company in its environment also answers at the root, as before.
 
 const MAX_BODY = 5 * 1024 * 1024;
@@ -53,7 +55,15 @@ export function routeOf(path: string, legacy?: string): { company?: string; rest
     return { company: legacy, rest: path };
 }
 
-/** What only the person who manages the machine does: its images. */
+/** The companies of the machine as the studio manages them: their .env, sent, never read back. */
+export interface CompanyFiles {
+    list: () => Array<{ id: string; sent: boolean; active: boolean; problem?: string }>;
+    /** Writes the .env of a company (checked first) and loads it; what it holds, by name. */
+    write: (id: string, text: string) => { names: string[]; kept: string[] };
+    remove: (id: string) => boolean;
+}
+
+/** What only the person who manages the machine does: its images, the files of its companies. */
 export interface RunnerAdmin {
     /** The admin token now (none: the routes do not exist). */
     token: () => string | undefined;
@@ -61,6 +71,7 @@ export interface RunnerAdmin {
     registry: string;
     /** The repositories of the other services of the runner (its memory). */
     services?: string[];
+    companies?: CompanyFiles;
 }
 
 export function createRunnerServer(tenants: Tenants, options: { legacy?: string; log: (line: string, details?: Record<string, unknown>) => void; designs?: DesignKit[]; version?: string; admin?: RunnerAdmin }) {
@@ -88,7 +99,9 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                 const admin = options.admin;
                 // No admin token on the machine and a wrong one look the same from outside.
                 if (!admin || !isAdmin(admin.token(), request.headers.authorization)) return send(response, 404, { error: 'not found' });
-                return await images(admin, request, response, url.pathname.slice('/_admin'.length), options.log);
+                const path = url.pathname.slice('/_admin'.length);
+                if (path === '/companies' || path.startsWith('/companies/')) return await companies(admin, request, response, path.slice('/companies'.length).replace(/^\//, ''), options.log);
+                return await images(admin, request, response, path, options.log);
             }
             const { company, rest } = routeOf(url.pathname, options.legacy);
             const tenant = company ? tenants.get(company) : undefined;
@@ -159,6 +172,34 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
             if (!response.headersSent) send(response, 400, { error: 'bad request' });
         }
     });
+}
+
+/**
+ * The companies of the machine: which there are (sent by the studio or placed by hand), the .env of
+ * one sent by the studio, and taking it off. The answers never hold a value of the file.
+ */
+async function companies(admin: RunnerAdmin, request: IncomingMessage, response: ServerResponse, id: string, log: (line: string, details?: Record<string, unknown>) => void) {
+    const files = admin.companies;
+    if (!files) return send(response, 404, { error: 'not found' });
+    if (!id) return request.method === 'GET' ? send(response, 200, { companies: files.list() }) : send(response, 404, { error: 'not found' });
+    if (request.method === 'PUT') {
+        const body = JSON.parse((await readBody(request)) || '{}') as { env?: unknown };
+        if (typeof body.env !== 'string' || !body.env.trim()) return send(response, 400, { error: 'env is required' });
+        try {
+            const written = files.write(id, body.env);
+            log('company sent by the studio', { company: id, variables: written.names, kept: written.kept });
+            return send(response, 200, { ok: true, ...written, company: files.list().find((item) => item.id === id) });
+        } catch (error) {
+            if (error instanceof ConfigError) return send(response, 400, { error: error.message });
+            throw error;
+        }
+    }
+    if (request.method === 'DELETE') {
+        const removed = files.remove(id);
+        if (removed) log('company taken off by the studio', { company: id });
+        return send(response, 200, { removed, company: files.list().find((item) => item.id === id) ?? null });
+    }
+    send(response, 404, { error: 'not found' });
 }
 
 /** The images of the machine: the list, then pulling or removing some, one by one (each with its outcome). */

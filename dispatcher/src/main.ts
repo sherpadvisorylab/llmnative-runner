@@ -4,7 +4,7 @@ import { designSlots } from './designs.ts';
 import { adminToken, dockerImages, ownImage } from './images.ts';
 import { hostname } from 'node:os';
 import { createRunnerServer } from './server.ts';
-import { Tenants, machineLimit } from './tenants.ts';
+import { Tenants, machineLimit, readAllCompanyFiles, removeSentCompany, writeSentCompany } from './tenants.ts';
 
 // The dispatcher of a runner: the companies of its folder (each with its own .env), their webhooks
 // and studios on PORT under their path, the reconciliation of each at start and every
@@ -67,7 +67,31 @@ async function main() {
         log,
         designs: kits,
         version: machine.version,
-        admin: { token: () => adminToken(machine.adminTokenFile), images, registry: machine.registry, services: machine.imageServices },
+        admin: {
+            token: () => adminToken(machine.adminTokenFile),
+            images,
+            registry: machine.registry,
+            services: machine.imageServices,
+            // The .env the studio sends: loaded at once, not at the next half minute.
+            companies: {
+                list: () => readAllCompanyFiles(machine).map((file) => ({
+                    id: file.id,
+                    sent: file.sent,
+                    active: !!tenants.get(file.id),
+                    ...(tenants.problems.has(file.id) ? { problem: tenants.problems.get(file.id) } : {}),
+                })),
+                write: (id, text) => {
+                    const written = writeSentCompany(machine, id, text);
+                    void start();
+                    return written;
+                },
+                remove: (id) => {
+                    const removed = removeSentCompany(machine, id);
+                    if (removed) void start();
+                    return removed;
+                },
+            },
+        },
     });
     server.listen(machine.port, async () => {
         log('runner listening', { version: machine.version, admin: !!adminToken(machine.adminTokenFile), port: machine.port, image: machine.image, maxParallel: machine.maxParallel, companiesDir: machine.companiesDir, designKits: kits.map((kit) => kit.kit), designNetwork: network ?? 'published on 127.0.0.1' });
