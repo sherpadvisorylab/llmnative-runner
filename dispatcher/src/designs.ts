@@ -49,6 +49,11 @@ interface DesignRecord {
     session?: string;
     /** The first message has run the skill: the next ones are plain messages. */
     opened?: boolean;
+    /**
+     * The commands the person ran with "/" after the first message, as typed and when: opencode keeps
+     * the text of the skill as the message, the conversation shows what the person wrote.
+     */
+    commands?: Array<{ at: number; text: string }>;
     pullRequest?: { number: number; url: string; branch: string };
     error?: string;
     /** Taken off the lists by the person: kept in the data, never shown again. */
@@ -274,6 +279,20 @@ export class DesignSessions {
             await this.call(record, 'POST', `/question/${asked.id}/reply`, { answers: chosen });
             return;
         }
+        // "/to-spec …": a command of opencode (a skill the method leaves to the person), when it has one by that name.
+        const command = /^\/([\w-]+)(?:\s+([\s\S]*))?$/.exec(text);
+        if (command && (await this.commandNames(record)).includes(command[1])) {
+            record.commands = [...(record.commands ?? []), { at: this.now(), text }];
+            this.save();
+            void this.call(record, 'POST', `/session/${record.session}/command`, {
+                command: command[1],
+                arguments: command[2] ?? '',
+                ...(record.model ? { model: record.model } : {}),
+            }, { timeout: 0 }).catch((error: Error & { cause?: { code?: string } }) => {
+                if (error.cause?.code !== 'UND_ERR_HEADERS_TIMEOUT') this.emit(id, { type: 'error', message: error.message });
+            });
+            return;
+        }
         await this.call(record, 'POST', `/session/${record.session}/prompt_async`, {
             parts: [{ type: 'text', text }],
             ...(record.model ? { model: { providerID: record.model.split('/')[0], modelID: record.model.slice(record.model.indexOf('/') + 1) } } : {}),
@@ -378,12 +397,20 @@ export class DesignSessions {
             tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } };
         };
         const raw = await this.call<Array<{ info: Info; parts: Part[] }>>(record, 'GET', `/session/${record.session}/message`);
+        // A command after the first message reads as the person typed it: the first message of the
+        // person from when it was sent on (opencode answers in a moment).
+        const commands = [...(record.commands ?? [])];
+        const typed = (message: { info: Info }) => {
+            const created = message.info.time?.created;
+            if (message.info.role !== 'user' || typeof created !== 'number' || !commands.length || created < commands[0].at - 5_000) return undefined;
+            return commands.shift()!.text;
+        };
         return raw.map((message, index) => ({
             id: message.info.id,
             role: message.info.role,
             text: message.info.role === 'user' && index === 0
                 ? record.topic
-                : message.parts
+                : (index > 0 && typed(message)) || message.parts
                     // A question asked with the tool reads as the agent wrote it, with its choices.
                     .map((part) => (part.type === 'text' && !part.synthetic ? part.text ?? '' : part.type === 'tool' && part.tool === 'question' ? questionText((part.state?.input?.questions ?? []) as Question[]) : ''))
                     .filter(Boolean).join('\n\n').trim()
@@ -521,6 +548,12 @@ export class DesignSessions {
     }
 
     /** The skill a session starts with: the command of its kit (a session made before kits: the only one). */
+    /** The commands opencode of the session knows (its own and one per skill). */
+    private async commandNames(record: DesignRecord): Promise<string[]> {
+        const commands = await this.call<Array<{ name?: string }>>(record, 'GET', '/command').catch(() => []);
+        return (Array.isArray(commands) ? commands : []).map((command) => String(command.name ?? ''));
+    }
+
     private commandOf(record: DesignRecord): string {
         const kit = this.options.kits[record.kit ?? ''] ?? Object.values(this.options.kits)[0];
         if (!kit) throw new DesignError('this runner has no design agent', 404);

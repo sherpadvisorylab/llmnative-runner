@@ -66,6 +66,8 @@ const KEPT_OUTPUTS = 30;
 const OUTPUT_EVERY = 500;
 
 const PRIORITY: Record<string, number> = { high: 0, normal: 1, low: 2 };
+/** The most of a spec put in the body of an Action (an issue takes 65536 characters in all). */
+const SPEC_MAX = 50_000;
 const MARKER = (data: object) => `<!-- playbook ${JSON.stringify(data)} -->`;
 export const issueKey = (repository: string, number: number) => `${repository}#${number}`;
 
@@ -355,8 +357,11 @@ export class Dispatcher {
             for (const folder of folders) {
                 const title = `Source: ${folder}`;
                 if (known.some((issue) => issue.title === title)) continue;
+                const specs = await this.specsOf(repository, folder);
                 const body = [
                     `A source was merged in \`${folder}\`. Digest it: the activities it holds, and the knowledge it settles proposed in the memory, each with its source.`,
+                    // The spec a design session wrote with to-spec: the issue Matt's method publishes, here.
+                    ...specs.flatMap((spec) => ['', `## Spec: \`${spec.path}\``, '', spec.content]),
                     '',
                     MARKER({ source: folder }),
                 ].join('\n');
@@ -372,6 +377,23 @@ export class Dispatcher {
             this.log('sources could not be opened', { repository, sources: folders, error: (error as Error).message });
         }
         return opened;
+    }
+
+    /**
+     * The specs in a source (`.scratch/<feature>/spec.md`, the issue tracker as local markdown of
+     * mattpocock/skills), each cut to fit in the body of an issue.
+     */
+    private async specsOf(repository: string, folder: string): Promise<Array<{ path: string; content: string }>> {
+        const path = (value: string) => value.split('/').map(encodeURIComponent).join('/');
+        const features = await this.github.request<Array<{ type: string; path: string }>>('GET', `/repos/${repository}/contents/${path(`${folder}/.scratch`)}`).catch(() => []);
+        const specs: Array<{ path: string; content: string }> = [];
+        for (const feature of (Array.isArray(features) ? features : []).filter((entry) => entry.type === 'dir')) {
+            const file = await this.github.request<{ content?: string; encoding?: string }>('GET', `/repos/${repository}/contents/${path(`${feature.path}/spec.md`)}`).catch(() => undefined);
+            if (!file?.content || file.encoding !== 'base64') continue;
+            const content = Buffer.from(file.content, 'base64').toString('utf8');
+            specs.push({ path: `${feature.path}/spec.md`, content: content.length > SPEC_MAX ? `${content.slice(0, SPEC_MAX)}\n\n_(cut here: the whole spec is in the file)_` : content });
+        }
+        return specs;
     }
 
     async reconcileRepository(repository: string): Promise<void> {
