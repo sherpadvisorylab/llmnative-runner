@@ -4,9 +4,9 @@ import { designSlots } from './designs.ts';
 import { adminToken, dockerImages, ownImage } from './images.ts';
 import { hostname } from 'node:os';
 import { createRunnerServer } from './server.ts';
-import { Tenants, machineLimit, readAllCompanyFiles, removeSentCompany, writeSentCompany } from './tenants.ts';
+import { Tenants, machineLimit, moveOrganizationsData, readAllCompanyFiles, removeSentCompany, writeSentCompany } from './tenants.ts';
 
-// The dispatcher of a runner: the companies of its folder (each with its own .env), their webhooks
+// The dispatcher of a runner: the organizations of ORGANIZATIONS_DIR (each with its own .env), their webhooks
 // and studios on PORT under their path, the reconciliation of each at start and every
 // RECONCILE_MINUTES, and the turns of every company within MAX_PARALLEL for the machine. The design
 // sessions of the companies run next to it, within DESIGN_MAX_SESSIONS, paused when left alone.
@@ -31,6 +31,8 @@ async function main() {
         }
         throw error;
     }
+    // The data of a runner older than 0.15, in the folder of before: moved before anything reads it.
+    if (moveOrganizationsData(machine.dataDir)) log('data moved', { from: `${machine.dataDir}/companies`, to: `${machine.dataDir}/organizations` });
 
     const limit = machineLimit(machine.maxParallel);
     // The sessions join the network of the dispatcher, to be reached by name.
@@ -73,7 +75,7 @@ async function main() {
             registry: machine.registry,
             services: machine.imageServices,
             // The .env the studio sends: loaded at once, not at the next half minute.
-            companies: {
+            organizations: {
                 list: () => readAllCompanyFiles(machine).map((file) => ({
                     id: file.id,
                     sent: file.sent,
@@ -94,7 +96,7 @@ async function main() {
         },
     });
     server.listen(machine.port, async () => {
-        log('runner listening', { version: machine.version, admin: !!adminToken(machine.adminTokenFile), port: machine.port, image: machine.image, maxParallel: machine.maxParallel, companiesDir: machine.companiesDir, designKits: kits.map((kit) => kit.kit), designNetwork: network ?? 'published on 127.0.0.1' });
+        log('server listening', { version: machine.version, admin: !!adminToken(machine.adminTokenFile), port: machine.port, image: machine.image, maxParallel: machine.maxParallel, organizationsDir: machine.companiesDir, designKits: kits.map((kit) => kit.kit), designNetwork: network ?? 'published on 127.0.0.1' });
         await start(true);
         setInterval(() => void start(), SYNC_MS).unref();
         setInterval(() => { for (const tenant of tenants.all()) void tenant.dispatcher.reconcile(); }, machine.reconcileMinutes * 60_000).unref();

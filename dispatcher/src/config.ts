@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 // The settings of the dispatcher of a runner. The machine ones come from the environment of the
-// container; each company has its own file, <COMPANIES_DIR>/<company>/.env, with its GitHub App, the
+// container; each organization has its own file, <ORGANIZATIONS_DIR>/<organization>/.env, with its GitHub App, the
 // secret of its webhook, the token of its studio and the keys of its models. A company only ever
 // works with its own file.
 
@@ -27,9 +27,9 @@ export const COMPANY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 export interface MachineConfig {
     port: number;
     dataDir: string;
-    /** Where the files of the companies are: one folder each, with its .env. */
+    /** Where the files of the organizations are (ORGANIZATIONS_DIR): one folder each, with its .env. */
     companiesDir: string;
-    /** Where the studio sends them (`/_admin/companies`): in the data of the dispatcher, ahead of `companiesDir`. */
+    /** Where the studio sends them (`/_admin/organizations`): `<DATA_DIR>/organizations`, ahead of `companiesDir`. */
     pushedDir: string;
     image: string;
     /** Turns at once on the whole machine, every company together. */
@@ -89,8 +89,8 @@ export function readMachineConfig(env: Vars = process.env): MachineConfig {
     return {
         port: positive(env, 'PORT', 8080),
         dataDir: env.DATA_DIR || '/data',
-        companiesDir: env.COMPANIES_DIR || '/companies',
-        pushedDir: `${env.DATA_DIR || '/data'}/companies`,
+        companiesDir: env.ORGANIZATIONS_DIR || '/organizations',
+        pushedDir: `${env.DATA_DIR || '/data'}/organizations`,
         image: env.AGENT_IMAGE || 'ghcr.io/sherpadvisorylab/playbook-agent:1.19.3',
         maxParallel: positive(env, 'MAX_PARALLEL', 2),
         turnTimeout: positive(env, 'TURN_TIMEOUT', 3600),

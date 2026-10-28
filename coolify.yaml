@@ -1,21 +1,21 @@
-# A runner as a Coolify resource ("Docker Compose Empty"): one dispatcher for every company of
-# /opt/playbook/companies, the domain given to the service dispatcher (https://agents.<domain>:8080).
+# A server as a Coolify resource ("Docker Compose Empty"): one dispatcher for every organization of
+# /opt/playbook/organizations, the domain given to the service dispatcher (https://agents.<domain>:8080).
 services:
   dispatcher:
-    image: ghcr.io/sherpadvisorylab/playbook-dispatcher:0.14.0
+    image: ghcr.io/sherpadvisorylab/playbook-dispatcher:0.15.0
     restart: unless-stopped
     environment:
       DATA_DIR: /data
-      COMPANIES_DIR: /companies
+      ORGANIZATIONS_DIR: /organizations
       PORT: "8080"
-      AGENT_IMAGE: ghcr.io/sherpadvisorylab/playbook-agent:0.14.0
+      AGENT_IMAGE: ghcr.io/sherpadvisorylab/playbook-agent:0.15.0
       MAX_PARALLEL: "1"
-      DESIGN_IMAGES: "ghcr.io/sherpadvisorylab/playbook-design-matt:0.14.0 ghcr.io/sherpadvisorylab/playbook-design-bmad:0.14.0"
+      DESIGN_IMAGES: "ghcr.io/sherpadvisorylab/playbook-design-matt:0.15.0 ghcr.io/sherpadvisorylab/playbook-design-bmad:0.15.0"
       DESIGN_MAX_SESSIONS: "2"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /opt/playbook/companies:/companies:ro
-      # The admin token of the runner (scripts/runner-admin.mjs): its page in the studio manages the images.
+      - /opt/playbook/organizations:/organizations:ro
+      # The admin token of the runner (scripts/server-admin.mjs): its page in the studio manages the images.
       - /opt/playbook/admin:/admin:ro
       - dispatcher-data:/data
     expose:

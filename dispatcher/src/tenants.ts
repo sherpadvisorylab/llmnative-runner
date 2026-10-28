@@ -66,7 +66,7 @@ export interface TenantDeps {
 }
 
 export function createTenant(config: CompanyConfig, version: string, deps: TenantDeps): Tenant {
-    const dir = join(deps.machine.dataDir, 'companies', config.id);
+    const dir = join(deps.machine.dataDir, 'organizations', config.id);
     const logs = join(dir, 'logs');
     mkdirSync(logs, { recursive: true });
     const mask = masker(config);
@@ -99,6 +99,19 @@ export function createTenant(config: CompanyConfig, version: string, deps: Tenan
         fetch: deps.fetch,
     });
     return { id: config.id, config, github, dispatcher, designs, deliveries: new Deliveries(), mask, log, version };
+}
+
+/**
+ * The data of the organizations in the volume of the dispatcher, `<DATA_DIR>/companies` before 0.15,
+ * moved once to `<DATA_DIR>/organizations` (their .env sent by the studio, logs, failures, designs).
+ * True when it moved it; a folder already there is never touched.
+ */
+export function moveOrganizationsData(dataDir: string): boolean {
+    const before = join(dataDir, 'companies');
+    const now = join(dataDir, 'organizations');
+    if (!existsSync(before) || existsSync(now)) return false;
+    renameSync(before, now);
+    return true;
 }
 
 /** The .env of each company in the folder, with when it changed: `<dir>/<company>/.env`. */

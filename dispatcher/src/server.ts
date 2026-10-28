@@ -15,7 +15,7 @@ import { ConfigError } from './config.ts';
 //   /<company>/designs[/<id>[/messages|events|files|finish]]  its design sessions, for its studio too
 //   POST /<company>/sources            the Actions of merged sources, for its studio
 //   /_admin/images[/pull|/remove]       the images of the machine, with the admin token of the runner
-//   /_admin/companies[/<company>]       the companies of the machine and the .env the studio sends for each
+//   /_admin/organizations[/<id>]        the organizations of the machine and the .env the studio sends for each
 // A dispatcher started with one company in its environment also answers at the root, as before.
 
 const MAX_BODY = 5 * 1024 * 1024;
@@ -55,7 +55,7 @@ export function routeOf(path: string, legacy?: string): { company?: string; rest
     return { company: legacy, rest: path };
 }
 
-/** The companies of the machine as the studio manages them: their .env, sent, never read back. */
+/** The organizations of the machine as the studio manages them: their .env, sent, never read back. */
 export interface CompanyFiles {
     list: () => Array<{ id: string; sent: boolean; active: boolean; problem?: string }>;
     /** Writes the .env of a company (checked first) and loads it; what it holds, by name. */
@@ -71,7 +71,7 @@ export interface RunnerAdmin {
     registry: string;
     /** The repositories of the other services of the runner (its memory). */
     services?: string[];
-    companies?: CompanyFiles;
+    organizations?: CompanyFiles;
 }
 
 export function createRunnerServer(tenants: Tenants, options: { legacy?: string; log: (line: string, details?: Record<string, unknown>) => void; designs?: DesignKit[]; version?: string; admin?: RunnerAdmin }) {
@@ -83,7 +83,7 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                 return send(response, 200, {
                     ok: true,
                     version: options.version ?? 'dev',
-                    companies: all.length,
+                    organizations: all.length,
                     running: all.reduce((sum, tenant) => sum + tenant.dispatcher.state.running.length, 0),
                     queued: all.reduce((sum, tenant) => sum + tenant.dispatcher.state.queued.length, 0),
                     // The services of the runner: what the studio shows on its page (no secret here).
@@ -100,7 +100,7 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                 // No admin token on the machine and a wrong one look the same from outside.
                 if (!admin || !isAdmin(admin.token(), request.headers.authorization)) return send(response, 404, { error: 'not found' });
                 const path = url.pathname.slice('/_admin'.length);
-                if (path === '/companies' || path.startsWith('/companies/')) return await companies(admin, request, response, path.slice('/companies'.length).replace(/^\//, ''), options.log);
+                if (path === '/organizations' || path.startsWith('/organizations/')) return await organizations(admin, request, response, path.slice('/organizations'.length).replace(/^\//, ''), options.log);
                 return await images(admin, request, response, path, options.log);
             }
             const { company, rest } = routeOf(url.pathname, options.legacy);
@@ -175,20 +175,20 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
 }
 
 /**
- * The companies of the machine: which there are (sent by the studio or placed by hand), the .env of
+ * The organizations of the machine: which there are (sent by the studio or placed by hand), the .env of
  * one sent by the studio, and taking it off. The answers never hold a value of the file.
  */
-async function companies(admin: RunnerAdmin, request: IncomingMessage, response: ServerResponse, id: string, log: (line: string, details?: Record<string, unknown>) => void) {
-    const files = admin.companies;
+async function organizations(admin: RunnerAdmin, request: IncomingMessage, response: ServerResponse, id: string, log: (line: string, details?: Record<string, unknown>) => void) {
+    const files = admin.organizations;
     if (!files) return send(response, 404, { error: 'not found' });
-    if (!id) return request.method === 'GET' ? send(response, 200, { companies: files.list() }) : send(response, 404, { error: 'not found' });
+    if (!id) return request.method === 'GET' ? send(response, 200, { organizations: files.list() }) : send(response, 404, { error: 'not found' });
     if (request.method === 'PUT') {
         const body = JSON.parse((await readBody(request)) || '{}') as { env?: unknown };
         if (typeof body.env !== 'string' || !body.env.trim()) return send(response, 400, { error: 'env is required' });
         try {
             const written = files.write(id, body.env);
-            log('company sent by the studio', { company: id, variables: written.names, kept: written.kept });
-            return send(response, 200, { ok: true, ...written, company: files.list().find((item) => item.id === id) });
+            log('organization sent by the studio', { company: id, variables: written.names, kept: written.kept });
+            return send(response, 200, { ok: true, ...written, organization: files.list().find((item) => item.id === id) });
         } catch (error) {
             if (error instanceof ConfigError) return send(response, 400, { error: error.message });
             throw error;
@@ -196,8 +196,8 @@ async function companies(admin: RunnerAdmin, request: IncomingMessage, response:
     }
     if (request.method === 'DELETE') {
         const removed = files.remove(id);
-        if (removed) log('company taken off by the studio', { company: id });
-        return send(response, 200, { removed, company: files.list().find((item) => item.id === id) ?? null });
+        if (removed) log('organization taken off by the studio', { company: id });
+        return send(response, 200, { removed, organization: files.list().find((item) => item.id === id) ?? null });
     }
     send(response, 404, { error: 'not found' });
 }
