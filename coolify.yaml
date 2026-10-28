@@ -1,6 +1,6 @@
 # A server as a Coolify resource ("Docker Compose Empty"): one dispatcher for every organization of
 # /opt/playbook/organizations, the domain given to the service dispatcher (https://agents.<domain>:8080).
-# Every image takes its release from the variable PLAYBOOK_VERSION of the resource (e.g. 0.15.0): an
+# Every image takes its release from the variable PLAYBOOK_VERSION of the resource (e.g. 0.16.0): an
 # update changes it and redeploys, the compose stays as it is.
 services:
   dispatcher:

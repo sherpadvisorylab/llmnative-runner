@@ -2,6 +2,7 @@ import { ConfigError, readLegacyCompany, readMachineConfig, type CompanyConfig, 
 import { designHost, designKit, dockerRunner, ownNetwork, type DesignKit } from './docker.ts';
 import { designSlots } from './designs.ts';
 import { adminToken, dockerImages, ownImage } from './images.ts';
+import { memoryBackup } from './backup.ts';
 import { hostname } from 'node:os';
 import { createRunnerServer } from './server.ts';
 import { Tenants, machineLimit, moveOrganizationsData, readAllCompanyFiles, removeSentCompany, writeSentCompany } from './tenants.ts';
@@ -74,6 +75,8 @@ async function main() {
             images,
             registry: machine.registry,
             services: machine.imageServices,
+            // The backup of the memory: a throwaway container of its own image (sh and tar are there), or alpine.
+            memory: memoryBackup({ dir: machine.backupDir, image: own ?? 'alpine:3.20' }),
             // The .env the studio sends: loaded at once, not at the next half minute.
             organizations: {
                 list: () => readAllCompanyFiles(machine).map((file) => ({

@@ -47,6 +47,8 @@ export interface MachineConfig {
     imageServices: string[];
     /** The file with the admin token of the runner (written by the studio); none: no admin routes. */
     adminTokenFile: string;
+    /** The folder of the host where the backups of the memory go (BACKUP_DIR): a path of the machine, not of the container. */
+    backupDir: string;
     /** The design sessions: the images of the design agents, one per kit (none: no design agent on this runner), how many at once on the machine, when they pause and go. */
     design: { images: string[]; maxSessions: number; idleMinutes: number; keepDays: number; memory?: string; network?: string };
 }
@@ -102,6 +104,7 @@ export function readMachineConfig(env: Vars = process.env): MachineConfig {
         registry: (env.IMAGE_REGISTRY || 'ghcr.io/sherpadvisorylab').replace(/\/+$/, ''),
         imageServices: (env.IMAGE_SERVICES ?? 'supermemory/supermemory').split(/[\s,]+/).filter(Boolean),
         adminTokenFile: env.ADMIN_TOKEN_FILE || '/admin/token',
+        backupDir: (env.BACKUP_DIR || '/opt/playbook/backups').replace(/\/+$/, ''),
         design: {
             // The design agents of the runner, one image per kit (DESIGN_IMAGES, space or comma
             // separated; DESIGN_IMAGE for one, as before). None: no design sessions here.

@@ -63,7 +63,10 @@ export function imagePattern(registry: string, services: readonly string[] = [])
 /** Whether a repository is one the runner manages: of its registry, or of one of its services. */
 const managed = (repository: string, registry: string, services: readonly string[]) => repository.startsWith(`${registry}/playbook-`) || services.includes(repository);
 
-const run = (command: string, args: string[]) => new Promise<{ code: number; output: string }>((resolve) => {
+/** Runs a command of the machine (the docker CLI), its output kept: what the tests replace with a fake. */
+export type RunCommand = (command: string, args: string[]) => Promise<{ code: number; output: string }>;
+
+export const run: RunCommand = (command, args) => new Promise((resolve) => {
     const child = spawn(command, args, { env: { PATH: process.env.PATH, DOCKER_HOST: process.env.DOCKER_HOST }, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     const keep = (chunk: Buffer) => { output = (output + chunk.toString('utf8')).slice(-100_000); };

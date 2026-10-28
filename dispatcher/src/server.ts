@@ -6,6 +6,7 @@ import { DesignError, type DesignEvent } from './designs.ts';
 import type { DesignKit } from './docker.ts';
 import { ImageError, imagePattern, isAdmin, type ImageHost } from './images.ts';
 import { ConfigError } from './config.ts';
+import { BackupError, type MemoryBackup } from './backup.ts';
 
 // The HTTP side of the runner. Every route of a company lives under its path, `/<company>/…`, and is
 // served with that company only: its webhook secret, its studio token, its dispatcher.
@@ -16,6 +17,7 @@ import { ConfigError } from './config.ts';
 //   POST /<company>/sources            the Actions of merged sources, for its studio
 //   /_admin/images[/pull|/remove]       the images of the machine, with the admin token of the runner
 //   /_admin/organizations[/<id>]        the organizations of the machine and the .env the studio sends for each
+//   POST /_admin/memory/backup          the memory stopped and its data saved on the host, before an update
 // A dispatcher started with one company in its environment also answers at the root, as before.
 
 const MAX_BODY = 5 * 1024 * 1024;
@@ -72,6 +74,8 @@ export interface RunnerAdmin {
     /** The repositories of the other services of the runner (its memory). */
     services?: string[];
     organizations?: CompanyFiles;
+    /** The backup of the memory of the runner, before an update. */
+    memory?: MemoryBackup;
 }
 
 export function createRunnerServer(tenants: Tenants, options: { legacy?: string; log: (line: string, details?: Record<string, unknown>) => void; designs?: DesignKit[]; version?: string; admin?: RunnerAdmin }) {
@@ -101,6 +105,13 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                 if (!admin || !isAdmin(admin.token(), request.headers.authorization)) return send(response, 404, { error: 'not found' });
                 const path = url.pathname.slice('/_admin'.length);
                 if (path === '/organizations' || path.startsWith('/organizations/')) return await organizations(admin, request, response, path.slice('/organizations'.length).replace(/^\//, ''), options.log);
+                if (path === '/memory/backup') {
+                    if (request.method !== 'POST' || !admin.memory) return send(response, 404, { error: 'not found' });
+                    // Minutes for a large memory: the studio waits for the answer.
+                    const saved = await admin.memory.backup();
+                    options.log('memory saved', saved);
+                    return send(response, 200, { ok: true, ...saved });
+                }
                 return await images(admin, request, response, path, options.log);
             }
             const { company, rest } = routeOf(url.pathname, options.legacy);
@@ -167,7 +178,7 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
             }
             send(response, 404, { error: 'not found' });
         } catch (error) {
-            if (error instanceof DesignError || error instanceof ImageError) return send(response, error.status, { error: error.message });
+            if (error instanceof DesignError || error instanceof ImageError || error instanceof BackupError) return send(response, error.status, { error: error.message });
             options.log('request failed', { error: (error as Error).message });
             if (!response.headersSent) send(response, 400, { error: 'bad request' });
         }
