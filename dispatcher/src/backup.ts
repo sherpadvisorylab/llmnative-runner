@@ -12,6 +12,11 @@ export const MEMORY_LABEL = 'coolify.service.subName=supermemory';
 export interface MemoryBackup {
     /** Stops the memory and saves its data; the file on the host and its size. */
     backup(): Promise<{ file: string; bytes: number }>;
+    /**
+     * The API key supermemory made for itself at its first start (`/data/api-key` in its volume), read by
+     * a throwaway container: the memory keeps running. Never logged.
+     */
+    key(): Promise<string>;
 }
 
 export class BackupError extends Error {
@@ -40,19 +45,32 @@ export function memoryBackup(options: {
     const run = options.run ?? runCommand;
     const now = options.now ?? (() => new Date());
     let running = false;
+    /** The container of the memory and its /data volume. */
+    const located = async () => {
+        const listed = await run(docker, ['ps', '-aq', '--filter', `label=${MEMORY_LABEL}`]);
+        if (listed.code !== 0) throw new BackupError(`docker ps failed: ${lastLine(listed.output)}`, 502);
+        const container = listed.output.split('\n').map((line) => line.trim()).find((line) => /^[0-9a-f]{12,64}$/.test(line));
+        if (!container) throw new BackupError('no memory on this machine', 404);
+        const inspected = await run(docker, ['inspect', container, '--format', '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}']);
+        const volume = inspected.code === 0 ? inspected.output.trim() : '';
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(volume)) throw new BackupError('the memory has no data volume', 404);
+        return { container, volume };
+    };
     return {
+        async key() {
+            const { volume } = await located();
+            const read = await run(docker, ['run', '--rm', '--entrypoint', 'sh', '-v', `${volume}:/data:ro`, options.image, '-c', 'cat /data/api-key']);
+            const key = lastLine(read.output);
+            // What Docker said on a failure is not the key: never sent back, only its absence.
+            if (read.code !== 0 || !/^[A-Za-z0-9_.~+/=-]{16,512}$/.test(key)) throw new BackupError('the memory has no API key yet', 404);
+            return key;
+        },
         async backup() {
             // Two at once would stop and copy the same data twice.
             if (running) throw new BackupError('a backup is running', 409);
             running = true;
             try {
-                const listed = await run(docker, ['ps', '-aq', '--filter', `label=${MEMORY_LABEL}`]);
-                if (listed.code !== 0) throw new BackupError(`docker ps failed: ${lastLine(listed.output)}`, 502);
-                const container = listed.output.split('\n').map((line) => line.trim()).find((line) => /^[0-9a-f]{12,64}$/.test(line));
-                if (!container) throw new BackupError('no memory on this machine', 404);
-                const inspected = await run(docker, ['inspect', container, '--format', '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}']);
-                const volume = inspected.code === 0 ? inspected.output.trim() : '';
-                if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(volume)) throw new BackupError('the memory has no data volume', 404);
+                const { container, volume } = await located();
                 const stopped = await run(docker, ['stop', container]);
                 if (stopped.code !== 0) throw new BackupError(`docker stop failed: ${lastLine(stopped.output)}`, 502);
                 const file = backupName(now());

@@ -18,6 +18,7 @@ import { BackupError, type MemoryBackup } from './backup.ts';
 //   /_admin/images[/pull|/remove]       the images of the machine, with the admin token of the runner
 //   /_admin/organizations[/<id>]        the organizations of the machine and the .env the studio sends for each
 //   POST /_admin/memory/backup          the memory stopped and its data saved on the host, before an update
+//   GET  /_admin/memory/key             the API key the memory made for itself (never logged)
 // A dispatcher started with one company in its environment also answers at the root, as before.
 
 const MAX_BODY = 5 * 1024 * 1024;
@@ -111,6 +112,12 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                     const saved = await admin.memory.backup();
                     options.log('memory saved', saved);
                     return send(response, 200, { ok: true, ...saved });
+                }
+                if (path === '/memory/key') {
+                    if (request.method !== 'GET' || !admin.memory) return send(response, 404, { error: 'not found' });
+                    const key = await admin.memory.key();
+                    options.log('memory key read');
+                    return send(response, 200, { key });
                 }
                 return await images(admin, request, response, path, options.log);
             }
