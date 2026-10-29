@@ -206,7 +206,20 @@ export class Dispatcher {
         // An issue waits for the issues it is blocked by.
         const blockers = await this.github.request<{ state: string }[]>('GET', `/repos/${repository}/issues/${number}/dependencies/blocked_by`).catch(() => []);
         if (blockers.some((blocker) => blocker.state === 'open')) return null;
+        // One change in flight: the agent that starts the code of a CR waits while another CR has its
+        // pull request open (its merge, a push, looks at the repository again). Its own CR goes on.
+        if (workflow.agents[needs].opensPullRequests && (await this.changeInFlight(repository, number))) return null;
         return { repository, number, agent: needs, priority: await this.priorityOf(issue), created: Date.parse(issue.created_at) };
+    }
+
+    /** The other CR of the repository with its pull request open (`playbook/issue-<n>`), if any. */
+    private async changeInFlight(repository: string, number: number): Promise<number | null> {
+        const pulls = await this.github.request<Array<{ head?: { ref?: string } }>>('GET', `/repos/${repository}/pulls?state=open&per_page=100`).catch(() => []);
+        for (const pull of pulls) {
+            const other = Number(/^playbook\/issue-(\d+)$/.exec(pull.head?.ref ?? '')?.[1]);
+            if (other && other !== number) return other;
+        }
+        return null;
     }
 
     /** The Priority of the issue on its board; normal when it has none or it cannot be read. */

@@ -16,7 +16,8 @@ export interface Workflow {
     statusPrefix: string;
     human: string;
     blocked: string;
-    agents: Record<string, { name: string; opencodeAgent: string; permissions: TokenPermissions }>;
+    /** `opensPullRequests`: it waits while another CR of the repository has its pull request open. */
+    agents: Record<string, { name: string; opencodeAgent: string; permissions: TokenPermissions; opensPullRequests?: boolean }>;
     /** Where a source merged in sources/ goes (the Source channel), when the workflow has it. */
     sources?: { to: string; status: string };
     /** A person's comment on an issue waiting for one: back to the agent that asked, with this status; not after a route that ends the path. */
