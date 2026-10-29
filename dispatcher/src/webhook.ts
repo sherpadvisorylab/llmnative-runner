@@ -29,6 +29,8 @@ export class Deliveries {
 export type WebhookAction =
     | { kind: 'issue'; repository: string; number: number }
     | { kind: 'repository'; repository: string; sources?: string[] }
+    /** A new comment on an issue: maybe a person's answer. */
+    | { kind: 'comment'; repository: string; number: number; comment: { body: string; user: { login: string; type: string } } }
     | { kind: 'none' };
 
 /**
@@ -47,13 +49,17 @@ export function sourcesOf(payload: { ref?: string; repository?: { default_branch
 }
 
 /** What an event asks of the dispatcher. */
-export function actionOf(event: string | undefined, payload: { action?: string; issue?: { number: number; pull_request?: unknown }; repository?: { full_name: string; default_branch?: string }; ref?: string; commits?: Array<{ added?: string[] }> }): WebhookAction {
+export function actionOf(event: string | undefined, payload: { action?: string; issue?: { number: number; pull_request?: unknown }; comment?: { body?: string; user?: { login?: string; type?: string } }; repository?: { full_name: string; default_branch?: string }; ref?: string; commits?: Array<{ added?: string[] }> }): WebhookAction {
     const repository = payload.repository?.full_name;
     if (!repository) return { kind: 'none' };
     if (event === 'issues' && payload.issue && !payload.issue.pull_request) {
         // A closed issue may unblock others: the whole repository is looked at again.
         if (payload.action === 'closed') return { kind: 'repository', repository };
         if (['opened', 'reopened', 'labeled', 'unlabeled', 'edited'].includes(payload.action ?? '')) return { kind: 'issue', repository, number: payload.issue.number };
+    }
+    if (event === 'issue_comment' && payload.action === 'created' && payload.issue && !payload.issue.pull_request && payload.comment) {
+        const { body = '', user = {} } = payload.comment;
+        return { kind: 'comment', repository, number: payload.issue.number, comment: { body, user: { login: user.login ?? '', type: user.type ?? '' } } };
     }
     // A new version of the workflow, or a pause, comes with a push; a source merged too.
     if (event === 'push') {

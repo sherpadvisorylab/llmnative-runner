@@ -2,6 +2,7 @@ import type { GitHubApi } from './github.ts';
 import type { RunTurn } from './docker.ts';
 import { readWorkflow, workOf, type Workflow } from './workflow.ts';
 import { OutputBuffer } from './output.ts';
+import { answerOf, answeredComment, maybeAnswer, type IssueComment } from './answers.ts';
 
 // The dispatcher: an issue whose `needs:` label is an agent of the workflow of its repository gets a
 // turn of that agent, one container. One turn per issue at a time, at most `maxParallel` at once,
@@ -317,10 +318,46 @@ export class Dispatcher {
         }
         await this.github.request('POST', `${base}/labels`, { labels: [workflow.needsPrefix + workflow.human, workflow.statusPrefix + workflow.blocked] });
         await this.github.request('POST', `${base}/comments`, {
-            body: `${MARKER({ event: 'limit', agent: 'dispatcher' })}\n**Dispatcher** → **Human** · ${workflow.statusPrefix}${workflow.blocked} · ${failures} turns of **${name}** failed in a row, the last because ${why}. A person looks at it, then hands it back with \`${workflow.needsPrefix}${agent}\`.\n\n\`\`\`\n${tail}\n\`\`\``,
+            body: `${MARKER({ event: 'limit', agent: 'dispatcher', of: agent })}\n**Dispatcher** → **Human** · ${workflow.statusPrefix}${workflow.blocked} · ${failures} turns of **${name}** failed in a row, the last because ${why}. A person looks at it, then hands it back with \`${workflow.needsPrefix}${agent}\`.\n\n\`\`\`\n${tail}\n\`\`\``,
         });
         this.log('issue handed to a person', { issue: key, agent, failures });
         this.announce({ type: 'handed', at: this.at(), repository, issue: number, agent, failures });
+    }
+
+    /**
+     * A new comment on an issue: when a person answered one waiting for a person, it goes back to the
+     * agent that asked, with their answer, and gets its turn. Never throws.
+     */
+    async answered(repository: string, number: number, comment: IssueComment): Promise<void> {
+        const key = issueKey(repository, number);
+        try {
+            if (!maybeAnswer(comment)) return;
+            const workflow = await this.workflowOf(repository, true);
+            if (!workflow?.answered) return;
+            const base = `/repos/${repository}/issues/${number}`;
+            const issue = await this.github.request<Issue>('GET', base);
+            if (issue.state !== 'open' || issue.pull_request || workOf(workflow, issue.labels).needs !== workflow.human) return;
+            const comments: IssueComment[] = [];
+            for (let page = 1; ; page += 1) {
+                const batch = await this.github.request<IssueComment[]>('GET', `${base}/comments?per_page=100&page=${page}`);
+                comments.push(...batch);
+                if (batch.length < 100) break;
+            }
+            const { asker, answers } = answerOf(workflow, comments);
+            if (!asker || !workflow.agents[asker] || !answers.length) return;
+            const by = answers.at(-1)!.user?.login || 'someone';
+            const { names } = workOf(workflow, issue.labels);
+            for (const label of names.filter((name) => name.startsWith(workflow.needsPrefix) || name.startsWith(workflow.statusPrefix))) {
+                await this.github.request('DELETE', `${base}/labels/${encodeURIComponent(label)}`).catch(() => undefined);
+            }
+            await this.github.request('POST', `${base}/labels`, { labels: [workflow.needsPrefix + asker, workflow.statusPrefix + workflow.answered.status] });
+            await this.github.request('POST', `${base}/comments`, { body: answeredComment(workflow, by, asker, answers) });
+            this.log('answer handed back', { issue: key, agent: asker, by });
+            this.announce({ type: 'issue', at: this.at(), repository, issue: number, action: 'answered' });
+            await this.consider(repository, number, true);
+        } catch (error) {
+            this.log('could not hand an answer back', { issue: key, error: (error as Error).message });
+        }
     }
 
     /** Every open issue that needs an agent, in every repository of the installation. */

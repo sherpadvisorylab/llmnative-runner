@@ -137,6 +137,7 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                 send(response, 202, { accepted: action.kind });
                 dispatcher.announce({ type: 'issue', at: new Date().toISOString(), repository: action.kind === 'none' ? '' : action.repository, ...(action.kind === 'issue' ? { issue: action.number } : {}), action: request.headers['x-github-event'] as string ?? '' });
                 if (action.kind === 'issue') void dispatcher.consider(action.repository, action.number, true);
+                if (action.kind === 'comment') void dispatcher.answered(action.repository, action.number, action.comment);
                 if (action.kind === 'repository') {
                     // A source merged: its Action for the agent of the Source channel, then the repository again.
                     void (action.sources?.length ? dispatcher.openSources(action.repository, action.sources) : Promise.resolve()).then(() => dispatcher.reconcileRepository(action.repository));
