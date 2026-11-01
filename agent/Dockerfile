@@ -15,6 +15,7 @@ RUN apt-get update \
 # Not root: the agent works in /work with its own user.
 RUN useradd --create-home --uid 10001 agent && mkdir -p /work && chown agent:agent /work
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/playbook-agent
+COPY --chmod=0644 usage.mjs /usr/local/lib/playbook/usage.mjs
 COPY --chown=agent:agent opencode.json /home/agent/.config/opencode/opencode.json
 
 USER agent

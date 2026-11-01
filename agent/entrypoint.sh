@@ -71,6 +71,8 @@ say "agent ${agent}${PLAYBOOK_ISSUE:+ on issue #${PLAYBOOK_ISSUE}}${PLAYBOOK_MOD
 set +e
 timeout --signal=TERM --kill-after=30 "${PLAYBOOK_TIMEOUT:-3600}" opencode "${args[@]}" "$prompt"
 code=$?
+# What the turn cost (model, tokens, dollars), as one line the dispatcher reads; never fails the turn.
+timeout 90 node /usr/local/lib/playbook/usage.mjs 2>/dev/null || true
 set -e
 [[ $code -eq 124 ]] && say "stopped after ${PLAYBOOK_TIMEOUT:-3600}s"
 say "exit ${code}"

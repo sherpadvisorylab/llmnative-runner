@@ -3,6 +3,7 @@ import type { RunTurn } from './docker.ts';
 import { readWorkflow, workOf, type Workflow } from './workflow.ts';
 import { OutputBuffer } from './output.ts';
 import { answerOf, answeredComment, maybeAnswer, type IssueComment } from './answers.ts';
+import { noteUsage, usageOfOutput, type TurnUsage } from './usage.ts';
 
 // The dispatcher: an issue whose `needs:` label is an agent of the workflow of its repository gets a
 // turn of that agent, one container. One turn per issue at a time, at most `maxParallel` at once,
@@ -56,7 +57,7 @@ export type LiveEvent =
 export type TurnOutput = { repository: string; issue: number; agent: string; startedAt: string; lines: string[]; ended?: { code: number; seconds: number; moved: boolean } };
 
 /** A turn that ran, kept for the studio: the last ones only. */
-export type TurnRecord = { repository: string; issue: number; agent: string; startedAt: string; seconds: number; code: number; moved: boolean };
+export type TurnRecord = { repository: string; issue: number; agent: string; startedAt: string; seconds: number; code: number; moved: boolean; usage?: TurnUsage };
 
 type Running = { repository: string; issue: number; agent: string; startedAt?: string };
 
@@ -296,14 +297,17 @@ export class Dispatcher {
             const moved = after.state !== 'open' || workOf(workflow, after.labels).needs !== agent;
             this.log('turn ended', { issue: key, agent, code: result.code, seconds, moved });
             output.end({ code: result.code, seconds, moved });
-            this.turns.unshift({ repository, issue: number, agent, startedAt: new Date(started).toISOString(), seconds, code: result.code, moved });
+            const usage = usageOfOutput(result.output);
+            this.turns.unshift({ repository, issue: number, agent, startedAt: new Date(started).toISOString(), seconds, code: result.code, moved, ...(usage ? { usage: { ...usage, seconds } } : {}) });
             this.turns.splice(RECENT_TURNS);
             this.announce({ type: 'turn-ended', at: this.at(), repository, issue: number, agent, code: result.code, seconds, moved });
-            if (moved) {
-                this.failures.set(key, 0);
-                return;
+            if (moved) this.failures.set(key, 0);
+            else await this.failed(workflow, repository, number, agent, result.code, result.output);
+            // What it cost, on the comment of the turn (its exit, or its failure): kept with the issue.
+            if (usage) {
+                await noteUsage(this.github, repository, number, agent, new Date(started - 1000).toISOString(), { ...usage, seconds })
+                    .catch((error) => this.log('usage not noted', { issue: key, error: (error as Error).message }));
             }
-            await this.failed(workflow, repository, number, agent, result.code, result.output);
         } catch (error) {
             this.log('turn could not run', { issue: key, agent, error: (error as Error).message });
         }
