@@ -151,11 +151,16 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                 return;
             }
 
-            if (request.method === 'GET' && (rest === '/state' || rest === '/events' || rest === '/output')) {
+            if (request.method === 'GET' && (rest === '/state' || rest === '/events' || rest === '/output' || rest === '/stats')) {
                 if (!tenant.config.studioToken) return send(response, 404, { error: 'studio access not configured' });
                 if (!fromStudio(tenant, request)) return send(response, 401, { error: 'bad token' });
                 if (rest === '/state') return send(response, 200, dispatcher.state);
                 // The output of the turn of one issue: ?repository=owner/name&issue=12
+                // What the container of the running turn of one issue takes now: ?repository=owner/name&issue=12
+                if (rest === '/stats') {
+                    const stats = await dispatcher.statsOf(url.searchParams.get('repository') ?? '', Number(url.searchParams.get('issue')));
+                    return stats ? send(response, 200, stats) : send(response, 404, { error: 'no turn' });
+                }
                 if (rest === '/output') {
                     const output = dispatcher.outputOf(url.searchParams.get('repository') ?? '', Number(url.searchParams.get('issue')));
                     return output ? send(response, 200, output) : send(response, 404, { error: 'no turn' });

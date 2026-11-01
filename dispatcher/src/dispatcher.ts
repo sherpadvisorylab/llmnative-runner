@@ -55,8 +55,6 @@ export type LiveEvent =
     | { type: 'turn-ended'; at: string; repository: string; issue: number; agent: string; code: number; seconds: number; moved: boolean }
     | { type: 'handed'; at: string; repository: string; issue: number; agent: string; failures: number }
     | { type: 'issue'; at: string; repository: string; issue?: number; action: string }
-    /** What the containers of the running turns take: the state carries it. */
-    | { type: 'stats'; at: string }
     | { type: 'turn-output'; at: string; repository: string; issue: number; agent: string; lines: string[] };
 
 /** What a turn printed so far, cleaned and masked: while it runs, and after it ended until the next one. */
@@ -67,7 +65,7 @@ export type TurnRecord = { repository: string; issue: number; agent: string; sta
 
 /** What the container of a turn takes now: CPU (percent of one core), memory and its limit, in bytes. */
 export type TurnStats = { cpu: number; memory: number; limit: number };
-type Running = { repository: string; issue: number; agent: string; startedAt?: string; name?: string; stats?: TurnStats };
+type Running = { repository: string; issue: number; agent: string; startedAt?: string; name?: string };
 
 /** The size of each repository in equivalent source lines, and the CRs already valued in it. */
 export interface SizeStore {
@@ -75,8 +73,6 @@ export interface SizeStore {
     set(repository: string, value: { size?: number; valued: number[] }): void;
 }
 
-/** How often the containers of the running turns are measured, in ms. */
-const STATS_EVERY = 15_000;
 
 const RECENT_TURNS = 100;
 /** Outputs kept for the studio: the turns running, and the last ones that ended. */
@@ -115,7 +111,6 @@ export class Dispatcher {
 
     private readonly sizes?: SizeStore;
     private readonly measure?: (names: string[]) => Promise<Record<string, TurnStats>>;
-    private statsTimer?: ReturnType<typeof setInterval>;
 
     constructor(deps: { github: GitHubApi; runTurn: RunTurn; failures: FailureStore; options: DispatcherOptions; log: Log; turnLog: TurnLog; now?: () => number; mask?: (text: string) => string; sizes?: SizeStore; stats?: (names: string[]) => Promise<Record<string, TurnStats>> }) {
         this.sizes = deps.sizes;
@@ -301,7 +296,6 @@ export class Dispatcher {
             const started = this.now();
             const name = `playbook-${repository.replace(/[^A-Za-z0-9_.-]/g, '-')}-${number}`;
             this.running.set(key, { repository, issue: number, agent, startedAt: this.at(), name });
-            this.watchStats();
             this.log('turn started', { issue: key, agent });
             this.announce({ type: 'turn-started', at: this.at(), repository, issue: number, agent });
             const output = this.follow(repository, number, agent, new Date(started).toISOString());
@@ -534,28 +528,15 @@ export class Dispatcher {
         return sent;
     }
 
-    /**
-     * What the containers of the running turns take, every few seconds while any runs: in the state the
-     * studio reads, announced so it reads it again.
-     */
-    private watchStats(): void {
-        if (!this.measure || this.statsTimer) return;
-        this.statsTimer = setInterval(async () => {
-            const turns = [...this.running.values()].filter((turn) => turn.name);
-            if (!turns.length) {
-                clearInterval(this.statsTimer);
-                this.statsTimer = undefined;
-                return;
-            }
-            try {
-                const measured = await this.measure!(turns.map((turn) => turn.name!));
-                for (const turn of turns) if (measured[turn.name!]) turn.stats = measured[turn.name!];
-                this.announce({ type: 'stats', at: this.at() });
-            } catch {
-                // Not measured this time.
-            }
-        }, STATS_EVERY);
-        this.statsTimer.unref?.();
+    /** What the container of the running turn of an issue takes now, measured when asked; null when none runs. */
+    async statsOf(repository: string, issue: number): Promise<TurnStats | null> {
+        const turn = this.running.get(issueKey(repository, issue));
+        if (!turn?.name || !this.measure) return null;
+        try {
+            return (await this.measure([turn.name]))[turn.name] ?? null;
+        } catch {
+            return null;
+        }
     }
 
     /**
