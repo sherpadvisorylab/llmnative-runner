@@ -25,6 +25,8 @@ export interface Workflow {
     /** An item whose pull request no longer merges into the working branch: to `to` (an agent or the human), with this status. */
     conflicts?: { status: string; to: string };
     paused: boolean;
+    /** The rank of the repository among the others of the company (`.playbook/state.yaml`): `normal` when not set. */
+    priority: 'high' | 'normal' | 'low';
 }
 
 async function fileOf(github: GitHubApi, repository: string, path: string, ref: string): Promise<string | null> {
@@ -46,7 +48,8 @@ export async function readWorkflow(github: GitHubApi, repository: string): Promi
         const config = JSON.parse(text) as Omit<Workflow, 'paused'>;
         if (!config.agents || typeof config.agents !== 'object') return null;
         const state = await fileOf(github, repository, STATE_FILE, config.workBranch || branch);
-        return { ...config, workBranch: config.workBranch || branch, paused: /^\s*paused:\s*true\s*$/m.test(state ?? '') };
+        const priority = /^\s*priority:\s*(high|normal|low)\s*$/m.exec(state ?? '')?.[1] as Workflow['priority'] | undefined;
+        return { ...config, workBranch: config.workBranch || branch, paused: /^\s*paused:\s*true\s*$/m.test(state ?? ''), priority: priority ?? 'normal' };
     }
     return null;
 }

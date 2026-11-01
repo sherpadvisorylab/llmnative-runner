@@ -44,7 +44,8 @@ type Issue = {
     labels: Array<string | { name?: string }>;
 };
 
-type Candidate = { repository: string; number: number; agent: string; priority: number; created: number };
+/** `rank`: the priority of its repository; `priority`: its own (the Priority of the board). */
+type Candidate = { repository: string; number: number; agent: string; rank: number; priority: number; created: number };
 
 /** What happens, as it happens: for the studio, through `/events`. */
 export type LiveEvent =
@@ -216,7 +217,7 @@ export class Dispatcher {
         // The changes in flight: the agent that starts the code of a CR waits while `maxChanges` other
         // CRs have their pull request open (a merge, a push, looks at the repository again). Those go on.
         if (workflow.agents[needs].opensPullRequests && (await this.changesInFlight(repository, number)).length >= (this.options.maxChanges ?? 1)) return null;
-        return { repository, number, agent: needs, priority: await this.priorityOf(issue), created: Date.parse(issue.created_at) };
+        return { repository, number, agent: needs, rank: PRIORITY[workflow.priority] ?? PRIORITY.normal, priority: await this.priorityOf(issue), created: Date.parse(issue.created_at) };
     }
 
     /** The other CRs of the repository with their pull request open (`playbook/issue-<n>`). */
@@ -245,7 +246,8 @@ export class Dispatcher {
     /** Starts the waiting turns while there is room, best first. */
     private pump(): void {
         while (this.running.size < this.options.maxParallel && this.queued.size) {
-            const next = [...this.queued.values()].sort((a, b) => a.priority - b.priority || a.created - b.created)[0];
+            // The project of higher priority first, then the Priority of the issue, then the oldest.
+            const next = [...this.queued.values()].sort((a, b) => a.rank - b.rank || a.priority - b.priority || a.created - b.created)[0];
             const key = issueKey(next.repository, next.number);
             this.queued.delete(key);
             this.running.set(key, { repository: next.repository, issue: next.number, agent: next.agent });
