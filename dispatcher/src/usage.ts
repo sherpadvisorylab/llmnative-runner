@@ -29,7 +29,7 @@ export function usageNote(usage: TurnUsage): string {
     const parts = [
         ...(usage.seconds !== undefined ? [`${Math.max(1, Math.round(usage.seconds / 60))} min`] : []),
         ...(usage.model ? [usage.model] : []),
-        `${thousands(usage.input + usage.cacheRead)} in`,
+        `${thousands(usage.input + usage.cacheRead + usage.cacheWrite)} in`,
         `${thousands(usage.output + usage.reasoning)} out`,
         `$${usage.cost.toFixed(4)}`,
     ];
