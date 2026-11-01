@@ -4,6 +4,9 @@
 //   [playbook-agent] usage {"model":"opencode/deepseek-v4.1-flash","input":…,"output":…,"reasoning":…,"cacheRead":…,"cacheWrite":…,"cost":…,"replies":…}
 // Never fails the turn: without a session or an export, it prints nothing.
 import { execFileSync } from 'node:child_process';
+import { closeSync, mkdtempSync, openSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const opencode = (args) => execFileSync('opencode', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 60_000, maxBuffer: 256 * 1024 * 1024 });
 
@@ -33,11 +36,26 @@ export function usageOf(session) {
     return usage.replies ? usage : null;
 }
 
+/**
+ * The export of a session, through a file: written to a pipe, opencode stops at 64 KB and the JSON of a
+ * long turn comes cut (only short sessions read whole).
+ */
+function exported(id) {
+    const file = join(mkdtempSync(join(tmpdir(), 'playbook-usage-')), 'session.json');
+    const out = openSync(file, 'w');
+    try {
+        execFileSync('opencode', ['export', id], { stdio: ['ignore', out, 'ignore'], timeout: 60_000 });
+    } finally {
+        closeSync(out);
+    }
+    return readFileSync(file, 'utf8');
+}
+
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop())) {
     try {
         const sessions = jsonOf(opencode(['session', 'list', '--max-count', '1', '--format', 'json']));
         const id = (Array.isArray(sessions) ? sessions[0] : sessions)?.id;
-        const usage = id ? usageOf(jsonOf(opencode(['export', id]))) : null;
+        const usage = id ? usageOf(jsonOf(exported(id))) : null;
         if (usage) console.log(`[playbook-agent] usage ${JSON.stringify(usage)}`);
     } catch {
         // No usage: the turn is what counts.
