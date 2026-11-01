@@ -4,6 +4,7 @@ import { readWorkflow, workOf, type Workflow } from './workflow.ts';
 import { OutputBuffer } from './output.ts';
 import { answerOf, answeredComment, maybeAnswer, type IssueComment } from './answers.ts';
 import { noteUsage, usageOfOutput, type TurnUsage } from './usage.ts';
+import { BYTES_PER_LINE, VALUE_MARKER, agentSecondsOf, eslocOf, valuationComment, valuationOf, type PullFile } from './valuation.ts';
 
 // The dispatcher: an issue whose `needs:` label is an agent of the workflow of its repository gets a
 // turn of that agent, one container. One turn per issue at a time, at most `maxParallel` at once,
@@ -54,6 +55,8 @@ export type LiveEvent =
     | { type: 'turn-ended'; at: string; repository: string; issue: number; agent: string; code: number; seconds: number; moved: boolean }
     | { type: 'handed'; at: string; repository: string; issue: number; agent: string; failures: number }
     | { type: 'issue'; at: string; repository: string; issue?: number; action: string }
+    /** What the containers of the running turns take: the state carries it. */
+    | { type: 'stats'; at: string }
     | { type: 'turn-output'; at: string; repository: string; issue: number; agent: string; lines: string[] };
 
 /** What a turn printed so far, cleaned and masked: while it runs, and after it ended until the next one. */
@@ -62,7 +65,18 @@ export type TurnOutput = { repository: string; issue: number; agent: string; sta
 /** A turn that ran, kept for the studio: the last ones only. */
 export type TurnRecord = { repository: string; issue: number; agent: string; startedAt: string; seconds: number; code: number; moved: boolean; usage?: TurnUsage };
 
-type Running = { repository: string; issue: number; agent: string; startedAt?: string };
+/** What the container of a turn takes now: CPU (percent of one core), memory and its limit, in bytes. */
+export type TurnStats = { cpu: number; memory: number; limit: number };
+type Running = { repository: string; issue: number; agent: string; startedAt?: string; name?: string; stats?: TurnStats };
+
+/** The size of each repository in equivalent source lines, and the CRs already valued in it. */
+export interface SizeStore {
+    get(repository: string): { size?: number; valued: number[] };
+    set(repository: string, value: { size?: number; valued: number[] }): void;
+}
+
+/** How often the containers of the running turns are measured, in ms. */
+const STATS_EVERY = 15_000;
 
 const RECENT_TURNS = 100;
 /** Outputs kept for the studio: the turns running, and the last ones that ended. */
@@ -99,7 +113,13 @@ export class Dispatcher {
     private readonly conflictsAgain = new Set<string>();
     lastReconcile?: string;
 
-    constructor(deps: { github: GitHubApi; runTurn: RunTurn; failures: FailureStore; options: DispatcherOptions; log: Log; turnLog: TurnLog; now?: () => number; mask?: (text: string) => string }) {
+    private readonly sizes?: SizeStore;
+    private readonly measure?: (names: string[]) => Promise<Record<string, TurnStats>>;
+    private statsTimer?: ReturnType<typeof setInterval>;
+
+    constructor(deps: { github: GitHubApi; runTurn: RunTurn; failures: FailureStore; options: DispatcherOptions; log: Log; turnLog: TurnLog; now?: () => number; mask?: (text: string) => string; sizes?: SizeStore; stats?: (names: string[]) => Promise<Record<string, TurnStats>> }) {
+        this.sizes = deps.sizes;
+        this.measure = deps.stats;
         this.mask = deps.mask ?? ((text) => text);
         this.github = deps.github;
         this.runTurn = deps.runTurn;
@@ -279,13 +299,15 @@ export class Dispatcher {
             const settings = workflow.agents[agent];
             const token = await this.github.turnToken(repository, settings.permissions);
             const started = this.now();
-            this.running.set(key, { repository, issue: number, agent, startedAt: this.at() });
+            const name = `playbook-${repository.replace(/[^A-Za-z0-9_.-]/g, '-')}-${number}`;
+            this.running.set(key, { repository, issue: number, agent, startedAt: this.at(), name });
+            this.watchStats();
             this.log('turn started', { issue: key, agent });
             this.announce({ type: 'turn-started', at: this.at(), repository, issue: number, agent });
             const output = this.follow(repository, number, agent, new Date(started).toISOString());
             const result = await this.runTurn({
                 onOutput: output.onOutput,
-                name: `playbook-${repository.replace(/[^A-Za-z0-9_.-]/g, '-')}-${number}`,
+                name,
                 timeout: this.options.turnTimeout,
                 env: {
                     ...this.options.agentEnv,
@@ -512,11 +534,105 @@ export class Dispatcher {
         return sent;
     }
 
+    /**
+     * What the containers of the running turns take, every few seconds while any runs: in the state the
+     * studio reads, announced so it reads it again.
+     */
+    private watchStats(): void {
+        if (!this.measure || this.statsTimer) return;
+        this.statsTimer = setInterval(async () => {
+            const turns = [...this.running.values()].filter((turn) => turn.name);
+            if (!turns.length) {
+                clearInterval(this.statsTimer);
+                this.statsTimer = undefined;
+                return;
+            }
+            try {
+                const measured = await this.measure!(turns.map((turn) => turn.name!));
+                for (const turn of turns) if (measured[turn.name!]) turn.stats = measured[turn.name!];
+                this.announce({ type: 'stats', at: this.at() });
+            } catch {
+                // Not measured this time.
+            }
+        }, STATS_EVERY);
+        this.statsTimer.unref?.();
+    }
+
+    /**
+     * The human-equivalent effort of a closed CR, written on it once: its merged pull request
+     * (`playbook/issue-<n>`) measured in equivalent source lines, against the size of the project
+     * before it (the first time read from the bytes of its languages, less this CR) and the hours its
+     * agents worked. Nothing without a merged pull request. Never throws.
+     */
+    async valuate(repository: string, number: number): Promise<boolean> {
+        if (!this.sizes) return false;
+        const known = this.sizes.get(repository);
+        if (known.valued.includes(number)) return false;
+        const done = (size = known.size) => this.sizes!.set(repository, { ...(size !== undefined ? { size } : {}), valued: [...known.valued, number].slice(-2000) });
+        try {
+            const base = `/repos/${repository}/issues/${number}`;
+            const issue = await this.github.request<Issue & { closed_at?: string }>('GET', base);
+            if (issue.state !== 'closed') return false;
+            const comments: Array<{ body?: string | null; created_at?: string }> = [];
+            for (let page = 1; page <= 10; page += 1) {
+                const batch = await this.github.request<Array<{ body?: string | null; created_at?: string }>>('GET', `${base}/comments?per_page=100&page=${page}`);
+                comments.push(...batch);
+                if (batch.length < 100) break;
+            }
+            if (comments.some((comment) => VALUE_MARKER.test(comment.body ?? ''))) {
+                done();
+                return false;
+            }
+            const owner = repository.split('/')[0];
+            const pulls = await this.github.request<Array<{ number: number; merged_at?: string | null }>>('GET', `/repos/${repository}/pulls?state=closed&head=${encodeURIComponent(`${owner}:playbook/issue-${number}`)}&per_page=10`);
+            const pull = pulls.find((candidate) => candidate.merged_at);
+            if (!pull) {
+                done();
+                return false;
+            }
+            const files: PullFile[] = [];
+            for (let page = 1; page <= 30; page += 1) {
+                const batch = await this.github.request<PullFile[]>('GET', `/repos/${repository}/pulls/${pull.number}/files?per_page=100&page=${page}`);
+                files.push(...batch);
+                if (batch.length < 100) break;
+            }
+            let before = known.size;
+            if (before === undefined) {
+                // The first CR valued: the project as it is now, less this CR.
+                const languages = await this.github.request<Record<string, number>>('GET', `/repos/${repository}/languages`).catch(() => ({} as Record<string, number>));
+                const lines = Object.values(languages).reduce((total, bytes) => total + bytes, 0) / BYTES_PER_LINE;
+                before = Math.max(0, Math.round(lines - eslocOf(files).esloc));
+            }
+            const value = valuationOf(pull.number, before, files, agentSecondsOf(comments));
+            await this.github.request('POST', `${base}/comments`, { body: valuationComment(value) });
+            done(value.sizeAfter);
+            this.log('CR valued', { issue: issueKey(repository, number), pull: pull.number, esloc: value.esloc, cocomoHours: value.cocomoHours, agentHours: value.agentHours });
+            this.announce({ type: 'issue', at: this.at(), repository, issue: number, action: 'valued' });
+            return true;
+        } catch (error) {
+            this.log('could not value a CR', { issue: issueKey(repository, number), error: (error as Error).message });
+            return false;
+        }
+    }
+
+    /** The CRs closed in the last week not valued yet, in the order they closed (the size of the project grows with each). */
+    private async valuateClosed(repository: string): Promise<void> {
+        if (!this.sizes) return;
+        const since = new Date(this.now() - 7 * 86_400_000).toISOString();
+        const closed = await this.github.request<Array<Issue & { closed_at?: string }>>('GET', `/repos/${repository}/issues?state=closed&since=${encodeURIComponent(since)}&per_page=100`).catch(() => []);
+        const valued = this.sizes.get(repository).valued;
+        const todo = closed
+            .filter((issue) => !issue.pull_request && issue.closed_at && !valued.includes(issue.number))
+            .sort((a, b) => Date.parse(a.closed_at!) - Date.parse(b.closed_at!));
+        for (const issue of todo) await this.valuate(repository, issue.number);
+    }
+
     async reconcileRepository(repository: string): Promise<void> {
         try {
             const workflow = await this.workflowOf(repository, true);
             if (!workflow || workflow.paused) return;
             await this.conflicts(repository, workflow);
+            await this.valuateClosed(repository);
             for (let page = 1; ; page += 1) {
                 const issues = await this.github.request<Issue[]>('GET', `/repos/${repository}/issues?state=open&per_page=100&page=${page}`);
                 for (const issue of issues) {

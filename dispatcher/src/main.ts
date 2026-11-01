@@ -1,5 +1,5 @@
 import { ConfigError, readLegacyCompany, readMachineConfig, type CompanyConfig, type MachineConfig } from './config.ts';
-import { designHost, designKit, dockerRunner, ownNetwork, type DesignKit } from './docker.ts';
+import { containerStats, designHost, designKit, dockerRunner, ownNetwork, type DesignKit } from './docker.ts';
 import { designSlots } from './designs.ts';
 import { adminToken, dockerImages, ownImage } from './images.ts';
 import { memoryBackup } from './backup.ts';
@@ -48,6 +48,7 @@ async function main() {
             const docker = dockerRunner({ image: machine.image, memory: machine.memory, network: machine.network, owner: `app-${config.appId}` });
             return (spec) => limit(() => docker.runTurn(spec));
         },
+        stats: (names) => containerStats(names),
         designHost: (config) => designHost({ memory: machine.design.memory, network, owner: `app-${config.appId}` }),
         designSlots: slots,
         designKits: Object.fromEntries(kits.map((kit) => [kit.kit, { image: kit.image, command: kit.command }])),

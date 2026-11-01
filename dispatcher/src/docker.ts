@@ -55,6 +55,32 @@ function docker(command: string, args: string[], env: NodeJS.ProcessEnv = proces
     });
 }
 
+/** A size of `docker stats` ("1.2GiB", "512MiB", "900kB") in bytes. */
+export function bytesOf(text: string): number {
+    const match = /^([\d.]+)\s*([kKMGT]?i?B)$/.exec(text.trim());
+    if (!match) return 0;
+    const units: Record<string, number> = { B: 1, kB: 1e3, KB: 1e3, KiB: 1024, MB: 1e6, MiB: 1024 ** 2, GB: 1e9, GiB: 1024 ** 3, TB: 1e12, TiB: 1024 ** 4 };
+    return Math.round(Number(match[1]) * (units[match[2]] ?? 1));
+}
+
+/** What containers take now, by name: CPU in percent of one core, memory and its limit. */
+export async function containerStats(names: string[], command = 'docker'): Promise<Record<string, { cpu: number; memory: number; limit: number }>> {
+    if (!names.length) return {};
+    const result = await docker(command, ['stats', '--no-stream', '--format', '{{json .}}', ...names]);
+    const stats: Record<string, { cpu: number; memory: number; limit: number }> = {};
+    for (const line of result.output.split('\n')) {
+        try {
+            const row = JSON.parse(line) as { Name?: string; CPUPerc?: string; MemUsage?: string };
+            if (!row.Name) continue;
+            const [used = '', limit = ''] = (row.MemUsage ?? '').split('/');
+            stats[row.Name] = { cpu: Number.parseFloat(row.CPUPerc ?? '0') || 0, memory: bytesOf(used), limit: bytesOf(limit) };
+        } catch {
+            // Not a line of stats.
+        }
+    }
+    return stats;
+}
+
 export function dockerRunner(options: DockerOptions): { runTurn: RunTurn; cleanUp(): Promise<void> } {
     const command = options.docker ?? 'docker';
     return {

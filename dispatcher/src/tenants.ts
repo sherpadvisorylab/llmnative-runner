@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { COMPANY_ID_PATTERN, ConfigError, parseEnvFile, readCompanyConfig, type CompanyConfig, type MachineConfig } from './config.ts';
-import { Dispatcher, type FailureStore, type Log } from './dispatcher.ts';
+import { Dispatcher, type FailureStore, type Log, type SizeStore, type TurnStats } from './dispatcher.ts';
 import type { RunTurn } from './docker.ts';
 import { createGitHub, type GitHubApi } from './github.ts';
 import { Deliveries } from './webhook.ts';
@@ -31,6 +31,23 @@ export function masker(config: CompanyConfig) {
 }
 
 /** The failures in a row of each issue of a company, in a JSON file that survives a restart. */
+function fileSizes(path: string): SizeStore {
+    let sizes: Record<string, { size?: number; valued: number[] }> = {};
+    try {
+        sizes = JSON.parse(readFileSync(path, 'utf8'));
+    } catch {
+        // First start.
+    }
+    return {
+        get: (repository) => sizes[repository] ?? { valued: [] },
+        set(repository, value) {
+            sizes[repository] = value;
+            writeFileSync(`${path}.tmp`, JSON.stringify(sizes, null, 2));
+            renameSync(`${path}.tmp`, path);
+        },
+    };
+}
+
 function fileFailures(path: string): FailureStore {
     let failures: Record<string, number> = {};
     try {
@@ -53,6 +70,8 @@ export interface TenantDeps {
     machine: MachineConfig;
     /** Runs a turn of this company: the image, on the machine, within the limit of the machine. */
     runTurn: (config: CompanyConfig) => RunTurn;
+    /** What the containers of the running turns take now, by name; none: not measured. */
+    stats?: (names: string[]) => Promise<Record<string, TurnStats>>;
     /** The containers of the design sessions of this company. */
     designHost: (config: CompanyConfig) => DesignHost;
     /** Design sessions at once on the machine, every company together. */
@@ -77,6 +96,8 @@ export function createTenant(config: CompanyConfig, version: string, deps: Tenan
         github,
         runTurn: deps.runTurn(config),
         failures: fileFailures(join(dir, 'failures.json')),
+        sizes: fileSizes(join(dir, 'sizes.json')),
+        stats: deps.stats,
         // The turns of the machine are for every company: one alone may use them all.
         options: { maxParallel: deps.machine.maxParallel, maxChanges: deps.machine.maxChanges, turnTimeout: deps.machine.turnTimeout, failuresToBlock: deps.machine.failuresToBlock, agentEnv: config.agentEnv },
         log,
