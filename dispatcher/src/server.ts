@@ -7,6 +7,7 @@ import type { DesignKit } from './docker.ts';
 import { ImageError, imagePattern, isAdmin, type ImageHost } from './images.ts';
 import { ConfigError } from './config.ts';
 import { BackupError, type MemoryBackup } from './backup.ts';
+import { readMachine } from './machine.ts';
 
 // The HTTP side of the runner. Every route of a company lives under its path, `/<company>/…`, and is
 // served with that company only: its webhook secret, its studio token, its dispatcher.
@@ -19,6 +20,7 @@ import { BackupError, type MemoryBackup } from './backup.ts';
 //   /_admin/organizations[/<id>]        the organizations of the machine and the .env the studio sends for each
 //   POST /_admin/memory/backup          the memory stopped and its data saved on the host, before an update
 //   GET  /_admin/memory/key             the API key the memory made for itself (never logged)
+//   GET  /_admin/machine                its memory and cores, for the limits of the turns
 // A dispatcher started with one company in its environment also answers at the root, as before.
 
 const MAX_BODY = 5 * 1024 * 1024;
@@ -112,6 +114,10 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                     const saved = await admin.memory.backup();
                     options.log('memory saved', saved);
                     return send(response, 200, { ok: true, ...saved });
+                }
+                if (path === '/machine') {
+                    if (request.method !== 'GET') return send(response, 404, { error: 'not found' });
+                    return send(response, 200, await readMachine());
                 }
                 if (path === '/memory/key') {
                     if (request.method !== 'GET' || !admin.memory) return send(response, 404, { error: 'not found' });
