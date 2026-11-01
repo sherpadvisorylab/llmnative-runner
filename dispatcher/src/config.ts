@@ -32,8 +32,10 @@ export interface MachineConfig {
     /** Where the studio sends them (`/_admin/organizations`): `<DATA_DIR>/organizations`, ahead of `companiesDir`. */
     pushedDir: string;
     image: string;
-    /** Turns at once on the whole machine, every company together. */
+    /** Turns at once on the whole machine, every company together; a company may use all of them. */
     maxParallel: number;
+    /** CRs of a repository with their pull request open at once (MAX_CHANGES); 1: one change in flight. */
+    maxChanges: number;
     turnTimeout: number;
     failuresToBlock: number;
     reconcileMinutes: number;
@@ -61,7 +63,7 @@ export interface CompanyConfig {
     webhookSecret?: string;
     /** The token the studio of the company sends to read its `/state`, `/events` and `/output`. */
     studioToken?: string;
-    /** Turns at once of this company. */
+    /** Turns at once of this company (MAX_PARALLEL of its file): no longer used, the machine sets them. */
     maxParallel: number;
     agentEnv: Record<string, string>;
 }
@@ -95,6 +97,7 @@ export function readMachineConfig(env: Vars = process.env): MachineConfig {
         pushedDir: `${env.DATA_DIR || '/data'}/organizations`,
         image: env.AGENT_IMAGE || 'ghcr.io/sherpadvisorylab/playbook-agent:1.19.3',
         maxParallel: positive(env, 'MAX_PARALLEL', 2),
+        maxChanges: positive(env, 'MAX_CHANGES', 1),
         turnTimeout: positive(env, 'TURN_TIMEOUT', 3600),
         failuresToBlock: positive(env, 'FAILURES_TO_BLOCK', 2),
         reconcileMinutes: positive(env, 'RECONCILE_MINUTES', 10),

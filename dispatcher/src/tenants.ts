@@ -77,7 +77,8 @@ export function createTenant(config: CompanyConfig, version: string, deps: Tenan
         github,
         runTurn: deps.runTurn(config),
         failures: fileFailures(join(dir, 'failures.json')),
-        options: { maxParallel: config.maxParallel, turnTimeout: deps.machine.turnTimeout, failuresToBlock: deps.machine.failuresToBlock, agentEnv: config.agentEnv },
+        // The turns of the machine are for every company: one alone may use them all.
+        options: { maxParallel: deps.machine.maxParallel, maxChanges: deps.machine.maxChanges, turnTimeout: deps.machine.turnTimeout, failuresToBlock: deps.machine.failuresToBlock, agentEnv: config.agentEnv },
         log,
         turnLog: {
             write(key, text) {

@@ -19,6 +19,8 @@ export interface DispatcherOptions {
     agentEnv: Record<string, string>;
     /** How long the workflow of a repository is trusted before it is read again, in ms. */
     workflowTtl?: number;
+    /** CRs of a repository with their pull request open at once (MAX_CHANGES): 1, one change in flight. */
+    maxChanges?: number;
 }
 
 export interface FailureStore {
@@ -207,20 +209,18 @@ export class Dispatcher {
         // An issue waits for the issues it is blocked by.
         const blockers = await this.github.request<{ state: string }[]>('GET', `/repos/${repository}/issues/${number}/dependencies/blocked_by`).catch(() => []);
         if (blockers.some((blocker) => blocker.state === 'open')) return null;
-        // One change in flight: the agent that starts the code of a CR waits while another CR has its
-        // pull request open (its merge, a push, looks at the repository again). Its own CR goes on.
-        if (workflow.agents[needs].opensPullRequests && (await this.changeInFlight(repository, number))) return null;
+        // The changes in flight: the agent that starts the code of a CR waits while `maxChanges` other
+        // CRs have their pull request open (a merge, a push, looks at the repository again). Those go on.
+        if (workflow.agents[needs].opensPullRequests && (await this.changesInFlight(repository, number)).length >= (this.options.maxChanges ?? 1)) return null;
         return { repository, number, agent: needs, priority: await this.priorityOf(issue), created: Date.parse(issue.created_at) };
     }
 
-    /** The other CR of the repository with its pull request open (`playbook/issue-<n>`), if any. */
-    private async changeInFlight(repository: string, number: number): Promise<number | null> {
+    /** The other CRs of the repository with their pull request open (`playbook/issue-<n>`). */
+    private async changesInFlight(repository: string, number: number): Promise<number[]> {
         const pulls = await this.github.request<Array<{ head?: { ref?: string } }>>('GET', `/repos/${repository}/pulls?state=open&per_page=100`).catch(() => []);
-        for (const pull of pulls) {
-            const other = Number(/^playbook\/issue-(\d+)$/.exec(pull.head?.ref ?? '')?.[1]);
-            if (other && other !== number) return other;
-        }
-        return null;
+        return pulls
+            .map((pull) => Number(/^playbook\/issue-(\d+)$/.exec(pull.head?.ref ?? '')?.[1]))
+            .filter((other) => other && other !== number);
     }
 
     /** The Priority of the issue on its board; normal when it has none or it cannot be read. */
