@@ -22,6 +22,8 @@ export interface Workflow {
     sources?: { to: string; status: string };
     /** A person's comment on an issue waiting for one: back to the agent that asked, with this status; not after a route that ends the path. */
     answered?: { status: string; finalRoutes: string[] };
+    /** An item whose pull request no longer merges into the working branch: to `to` (an agent or the human), with this status. */
+    conflicts?: { status: string; to: string };
     paused: boolean;
 }
 

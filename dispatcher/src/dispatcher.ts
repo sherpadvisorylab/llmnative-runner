@@ -73,6 +73,8 @@ const PRIORITY: Record<string, number> = { high: 0, normal: 1, low: 2 };
 /** The most of a spec put in the body of an Action (an issue takes 65536 characters in all). */
 const SPEC_MAX = 50_000;
 const MARKER = (data: object) => `<!-- playbook ${JSON.stringify(data)} -->`;
+/** When GitHub has not yet worked out whether a pull request merges: looked at again after this. */
+const CONFLICTS_AGAIN_MS = 60_000;
 export const issueKey = (repository: string, number: number) => `${repository}#${number}`;
 
 export class Dispatcher {
@@ -92,6 +94,8 @@ export class Dispatcher {
     private readonly now: () => number;
     /** Resolves when no turn is running and none is waiting: for tests and a graceful stop. */
     private idle: Array<() => void> = [];
+    /** The repositories whose pull requests are looked at again shortly (GitHub was still working out whether they merge). */
+    private readonly conflictsAgain = new Set<string>();
     lastReconcile?: string;
 
     constructor(deps: { github: GitHubApi; runTurn: RunTurn; failures: FailureStore; options: DispatcherOptions; log: Log; turnLog: TurnLog; now?: () => number; mask?: (text: string) => string }) {
@@ -450,10 +454,67 @@ export class Dispatcher {
         return specs;
     }
 
+    /**
+     * The pull requests of the CRs (`playbook/issue-<n>`) that no longer merge into the working branch,
+     * another change merged first: each CR goes to whoever the workflow says solves conflicts, with the
+     * status for it, unless it is there already, a person has it or its turn is running. GitHub works
+     * out whether a pull request merges after a push: one still unknown is looked at again in a minute.
+     */
+    async conflicts(repository: string, workflow: Workflow): Promise<number[]> {
+        const sent: number[] = [];
+        const settings = workflow.conflicts;
+        if (!settings) return sent;
+        const to = settings.to === workflow.human || workflow.agents[settings.to] ? settings.to : workflow.human;
+        let unknown = false;
+        const pulls = await this.github.request<Array<{ number: number; head?: { ref?: string }; base?: { ref?: string } }>>('GET', `/repos/${repository}/pulls?state=open&per_page=100`).catch(() => []);
+        for (const pull of pulls) {
+            const number = Number(/^playbook\/issue-(\d+)$/.exec(pull.head?.ref ?? '')?.[1]);
+            if (!number || pull.base?.ref !== workflow.workBranch) continue;
+            const key = issueKey(repository, number);
+            try {
+                const detail = await this.github.request<{ mergeable: boolean | null; mergeable_state?: string }>('GET', `/repos/${repository}/pulls/${pull.number}`);
+                if (detail.mergeable === null) {
+                    unknown = true;
+                    continue;
+                }
+                if (detail.mergeable || detail.mergeable_state !== 'dirty' || this.running.has(key)) continue;
+                const base = `/repos/${repository}/issues/${number}`;
+                const issue = await this.github.request<Issue>('GET', base);
+                const { needs, status, names } = workOf(workflow, issue.labels);
+                if (issue.state !== 'open' || status === settings.status || needs === workflow.human) continue;
+                for (const label of names.filter((name) => name.startsWith(workflow.needsPrefix) || name.startsWith(workflow.statusPrefix))) {
+                    await this.github.request('DELETE', `${base}/labels/${encodeURIComponent(label)}`).catch(() => undefined);
+                }
+                await this.github.request('POST', `${base}/labels`, { labels: [workflow.needsPrefix + to, workflow.statusPrefix + settings.status] });
+                const name = to === workflow.human ? 'Human' : workflow.agents[to]?.name ?? to;
+                await this.github.request('POST', `${base}/comments`, {
+                    body: `${MARKER({ event: 'conflict', agent: 'dispatcher', to, status: settings.status, pull: pull.number, ...(needs ? { from: needs } : {}) })}\n`
+                        + `**Dispatcher** → **${name}** · ${workflow.statusPrefix}${settings.status} · conflicts\n\n`
+                        + `The pull request #${pull.number} no longer merges into \`${workflow.workBranch}\`: another change merged first. `
+                        + `Merge \`${workflow.workBranch}\` into \`${pull.head?.ref}\`, solve the conflicts keeping both changes, run the tests again and push, then leave as usual${needs ? ` (it was with ${workflow.agents[needs]?.name ?? needs})` : ''}.`,
+                });
+                sent.push(number);
+                this.log('conflicts handed over', { issue: key, pull: pull.number, to });
+                this.announce({ type: 'issue', at: this.at(), repository, issue: number, action: 'conflicts' });
+            } catch (error) {
+                this.log('could not look at a pull request', { issue: key, pull: pull.number, error: (error as Error).message });
+            }
+        }
+        if (unknown && !this.conflictsAgain.has(repository)) {
+            this.conflictsAgain.add(repository);
+            setTimeout(() => {
+                this.conflictsAgain.delete(repository);
+                void this.reconcileRepository(repository);
+            }, CONFLICTS_AGAIN_MS).unref?.();
+        }
+        return sent;
+    }
+
     async reconcileRepository(repository: string): Promise<void> {
         try {
             const workflow = await this.workflowOf(repository, true);
             if (!workflow || workflow.paused) return;
+            await this.conflicts(repository, workflow);
             for (let page = 1; ; page += 1) {
                 const issues = await this.github.request<Issue[]>('GET', `/repos/${repository}/issues?state=open&per_page=100&page=${page}`);
                 for (const issue of issues) {
