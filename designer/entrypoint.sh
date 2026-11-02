@@ -6,6 +6,9 @@
 #   OPENCODE_SERVER_PASSWORD  required: the dispatcher talks to opencode with it
 #   PLAYBOOK_DESIGN_SETUP     a command run once in the clone before the session (set by the image of a
 #                             kit that keeps a runtime in the project, e.g. BMAD and its `_bmad/`)
+#   PLAYBOOK_DESIGN_OUTPUTS   the folders of the clone the documents go to; the first also takes the
+#                             files the person gave (copied by the dispatcher to /work/inputs), in
+#                             `<folder>/inputs/`, so they go to the pull request with the documents
 # Exit codes: 64 wrong settings; 65 clone failed; 66 setup of the kit failed; others from opencode.
 set -euo pipefail
 
@@ -42,6 +45,17 @@ if [[ -n "${PLAYBOOK_DESIGN_SETUP:-}" && ! -e .git/playbook-design-setup ]]; the
         exit 66
     fi
     touch .git/playbook-design-setup
+fi
+
+# The files the person gave at the start, once, next to the documents (as they came: never changed).
+if [[ -d /work/inputs && ! -e .git/playbook-design-inputs ]]; then
+    outputs="${PLAYBOOK_DESIGN_OUTPUTS:-}"
+    folder="${outputs%% *}"
+    target="${folder:+${folder%/}/}inputs"
+    mkdir -p "$target"
+    cp -R /work/inputs/. "$target/"
+    say "the files given are in ${target}/"
+    touch .git/playbook-design-inputs
 fi
 
 say "design session on ${GITHUB_REPOSITORY:-the mounted repository}"

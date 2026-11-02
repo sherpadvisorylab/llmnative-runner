@@ -49,6 +49,13 @@ services:
     image: ghcr.io/sherpadvisorylab/playbook-design-bmad:latest
     profiles: ["build"]
 
+  design-cartografo:
+    build:
+      context: ./designer
+      dockerfile: Dockerfile.cartografo
+    image: ghcr.io/sherpadvisorylab/playbook-design-cartografo:latest
+    profiles: ["build"]
+
   # HTTPS on plain Docker; on Coolify leave it out and give the service dispatcher the domain.
   caddy:
     image: caddy:2.8.4

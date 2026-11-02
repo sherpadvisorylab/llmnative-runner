@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { DesignFile, DesignHost } from './designs.ts';
 
 // One turn is one container of the agent image, run next to the dispatcher through the Docker socket.
@@ -142,13 +145,28 @@ export function designHost(options: DesignHostOptions): DesignHost {
     };
     return {
         async start(spec) {
-            await must([
-                'run', '-d', '--name', spec.name, '--label', `${DESIGN_LABEL}=${options.owner}`,
+            const settings = [
+                '--name', spec.name, '--label', `${DESIGN_LABEL}=${options.owner}`,
                 ...(options.memory ? ['--memory', options.memory] : []),
                 ...(options.network ? ['--network', options.network] : ['-p', '127.0.0.1::4096']),
                 ...Object.keys(spec.env).flatMap((name) => ['-e', name]),
                 spec.image,
-            ], { ...base, ...spec.env });
+            ];
+            if (!spec.inputs?.length) {
+                await must(['run', '-d', ...settings], { ...base, ...spec.env });
+                return address(spec.name);
+            }
+            // The files the person gave go in before it runs: created, given its files, then started.
+            await must(['create', ...settings], { ...base, ...spec.env });
+            const folder = await mkdtemp(join(tmpdir(), 'design-inputs-'));
+            try {
+                await chmod(folder, 0o755);
+                for (const input of spec.inputs) await writeFile(join(folder, input.name), input.content, { mode: 0o644 });
+                await must(['cp', `${folder}/.`, `${spec.name}:/work/inputs`]);
+            } finally {
+                await rm(folder, { recursive: true, force: true });
+            }
+            await must(['start', spec.name]);
             return address(spec.name);
         },
         async wake(name) {

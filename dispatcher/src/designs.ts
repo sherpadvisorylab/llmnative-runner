@@ -11,8 +11,11 @@ import type { Log } from './dispatcher.ts';
 
 /** What the dispatcher needs of Docker for the sessions. */
 export interface DesignHost {
-    /** Starts the container of a session; resolves with the address of its opencode. */
-    start(spec: { name: string; image: string; env: Record<string, string> }): Promise<string>;
+    /**
+     * Starts the container of a session; resolves with the address of its opencode. The files the
+     * person gave are in /work/inputs before it runs.
+     */
+    start(spec: { name: string; image: string; env: Record<string, string>; inputs?: DesignInput[] }): Promise<string>;
     /** Starts a stopped container again; resolves with its address. */
     wake(name: string): Promise<string>;
     pause(name: string): Promise<void>;
@@ -22,6 +25,9 @@ export interface DesignHost {
     /** The last lines the container printed, to say why a session did not start. */
     logs(name: string): Promise<string>;
 }
+
+/** A file the person gave at the start of a session (text): next to its documents, as it came. */
+export type DesignInput = { name: string; content: string };
 
 /** A document of a session: added in the clone (`new`) or changed (`modified`). */
 export type DesignFile = { path: string; content: string; status?: 'new' | 'modified' };
@@ -42,6 +48,8 @@ interface DesignRecord {
     model?: string;
     /** The spaces of the memory of the company the agent may read (never write); none: no memory. */
     memory?: string[];
+    /** The names of the files the person gave at the start (their content is in the container only). */
+    inputs?: string[];
     status: DesignStatus;
     createdAt: string;
     lastActive: string;
@@ -67,7 +75,31 @@ interface DesignRecord {
 }
 
 /** A session as the studio sees it: no container, no password. */
-export type DesignView = Pick<DesignRecord, 'id' | 'name' | 'repository' | 'topic' | 'kit' | 'model' | 'memory' | 'status' | 'createdAt' | 'lastActive' | 'pullRequest' | 'error' | 'workSeconds'>;
+export type DesignView = Pick<DesignRecord, 'id' | 'name' | 'repository' | 'topic' | 'kit' | 'model' | 'memory' | 'inputs' | 'status' | 'createdAt' | 'lastActive' | 'pullRequest' | 'error' | 'workSeconds'>;
+
+/** The files a person may give a session: text, a name of letters, digits and . _ -, up to 1 MB each and 3 MB in all. */
+const INPUT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
+const MAX_INPUT = 1024 * 1024;
+const MAX_INPUTS = 3 * 1024 * 1024;
+
+/** The files given at the start, checked: text only, each name once; an error says which and why. */
+export function designInputs(value: unknown): DesignInput[] {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value) || value.length > 20) throw new DesignError('inputs must be a list of up to 20 files', 400);
+    let total = 0;
+    const seen = new Set<string>();
+    return value.map((entry) => {
+        const name = String((entry as DesignInput)?.name ?? '');
+        const content = (entry as DesignInput)?.content;
+        if (!INPUT_NAME.test(name) || seen.has(name)) throw new DesignError(`input ${name || '(no name)'}: a name of letters, digits and . _ -, each once`, 400);
+        if (typeof content !== 'string' || content.includes('\0')) throw new DesignError(`input ${name}: not a text file`, 400);
+        const size = Buffer.byteLength(content, 'utf8');
+        total += size;
+        if (size > MAX_INPUT || total > MAX_INPUTS) throw new DesignError(`input ${name}: the files are up to 1 MB each and 3 MB in all`, 400);
+        seen.add(name);
+        return { name, content };
+    });
+}
 
 /** How many spaces of the memory a session may read, and what a tag is. */
 const MEMORY_SPACES = 10;
@@ -169,7 +201,7 @@ const LIVE: DesignStatus[] = ['starting', 'active', 'paused'];
 
 export const designSlug = (title: string) => title.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'design';
 
-const view = ({ id, name, repository, topic, kit, model, memory, status, createdAt, lastActive, pullRequest, error, workSeconds }: DesignRecord): DesignView => ({ id, ...(name ? { name } : {}), repository, topic, ...(kit ? { kit } : {}), model, ...(memory?.length ? { memory } : {}), status, createdAt, lastActive, workSeconds: Math.round(workSeconds ?? 0), ...(pullRequest ? { pullRequest } : {}), ...(error ? { error } : {}) });
+const view = ({ id, name, repository, topic, kit, model, memory, inputs, status, createdAt, lastActive, pullRequest, error, workSeconds }: DesignRecord): DesignView => ({ id, ...(name ? { name } : {}), repository, topic, ...(kit ? { kit } : {}), model, ...(memory?.length ? { memory } : {}), ...(inputs?.length ? { inputs } : {}), status, createdAt, lastActive, workSeconds: Math.round(workSeconds ?? 0), ...(pullRequest ? { pullRequest } : {}), ...(error ? { error } : {}) });
 
 export class DesignSessions {
     private readonly records = new Map<string, DesignRecord>();
@@ -202,7 +234,7 @@ export class DesignSessions {
     }
 
     /** Starts a session on a repository of the company, with what it is about; `id` may come from the studio (8 hex). */
-    async start(input: { id?: unknown; repository?: unknown; topic?: unknown; model?: unknown; kit?: unknown; memory?: unknown }): Promise<DesignView> {
+    async start(input: { id?: unknown; repository?: unknown; topic?: unknown; model?: unknown; kit?: unknown; memory?: unknown; inputs?: unknown }): Promise<DesignView> {
         const repository = String(input.repository ?? '');
         const topic = String(input.topic ?? '').trim();
         const model = input.model ? String(input.model) : undefined;
@@ -217,6 +249,7 @@ export class DesignSessions {
         if (!topic) throw new DesignError('topic is required', 400);
         if (model && !MODEL.test(model)) throw new DesignError('model must be provider/model', 400);
         if (memory.length > MEMORY_SPACES || memory.some((tag) => !MEMORY_TAG.test(tag))) throw new DesignError(`memory must be up to ${MEMORY_SPACES} tags of letters, digits and . _ : -`, 400);
+        const inputs = designInputs(input.inputs);
         // The studio may choose the id, to tie its chat to the session before it exists.
         const wanted = typeof input.id === 'string' ? input.id : '';
         if (wanted && (!/^[a-f0-9]{8}$/.test(wanted) || this.records.has(wanted))) throw new DesignError('id must be 8 hex digits, not taken', 400);
@@ -224,7 +257,7 @@ export class DesignSessions {
         if (!(await this.takeSlot(`${this.options.company}/${id}`, id))) throw new DesignError('too many design sessions on this runner: try again later', 429);
         const at = new Date(this.now()).toISOString();
         const record: DesignRecord = {
-            id, name: this.nameFor(repository, topic, kit, at), repository, topic, kit, model, ...(memory.length ? { memory } : {}), status: 'starting', createdAt: at, lastActive: at,
+            id, name: this.nameFor(repository, topic, kit, at), repository, topic, kit, model, ...(memory.length ? { memory } : {}), ...(inputs.length ? { inputs: inputs.map((file) => file.name) } : {}), status: 'starting', createdAt: at, lastActive: at,
             container: `playbook-design-${this.options.company}-${id}`,
             password: randomBytes(24).toString('base64url'),
         };
@@ -237,6 +270,7 @@ export class DesignSessions {
                 name: record.container,
                 image: this.options.kits[kit].image,
                 env: { ...designEnv(this.options.agentEnv, memory), GITHUB_REPOSITORY: repository, GITHUB_TOKEN: token, OPENCODE_SERVER_PASSWORD: record.password },
+                ...(inputs.length ? { inputs } : {}),
             });
             await this.ready(record);
             record.session = (await this.call<{ id: string }>(record, 'POST', '/session', { title: topic.slice(0, 80) })).id;
@@ -732,7 +766,7 @@ export function errorText(error: { name?: string; data?: { message?: string } } 
  * The conversation of a session as a source: who asked what, the answers, what the agent did, as it
  * went. The first message of the person is the topic; a question asked with the tool reads with its choices.
  */
-export function transcriptOf(record: Pick<DesignRecord, 'id' | 'repository' | 'topic' | 'kit' | 'model' | 'memory' | 'createdAt'>, messages: readonly DesignMessage[], title: string, finishedAt: string): string {
+export function transcriptOf(record: Pick<DesignRecord, 'id' | 'repository' | 'topic' | 'kit' | 'model' | 'memory' | 'inputs' | 'createdAt'>, messages: readonly DesignMessage[], title: string, finishedAt: string): string {
     const lines = [
         `# ${title}`,
         '',
@@ -741,6 +775,7 @@ export function transcriptOf(record: Pick<DesignRecord, 'id' | 'repository' | 't
         ...(record.model ? [`- Model: ${record.model}`] : []),
         `- Repository: ${record.repository}`,
         ...(record.memory?.length ? [`- Memory read: ${record.memory.join(', ')}`] : []),
+        ...(record.inputs?.length ? [`- Files given: ${record.inputs.join(', ')}`] : []),
         `- Session: ${record.id}, from ${record.createdAt} to ${finishedAt}`,
         ...usageLine(messages),
         '',
