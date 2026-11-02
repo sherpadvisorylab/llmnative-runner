@@ -4,6 +4,7 @@ import { readWorkflow, workOf, type Workflow } from './workflow.ts';
 import { OutputBuffer } from './output.ts';
 import { answerOf, answeredComment, interruptedClaim, maybeAnswer, type IssueComment } from './answers.ts';
 import { noteUsage, usageOfOutput, type TurnUsage } from './usage.ts';
+import { knowledgeKeeper, type IssueState } from './knowledge.ts';
 import { BYTES_PER_LINE, VALUATION_MODEL, VALUE_MARKER, agentSecondsOf, eslocOf, valuationComment, valuationOf, type PullFile } from './valuation.ts';
 
 // The dispatcher: an issue whose `needs:` label is an agent of the workflow of its repository gets a
@@ -112,8 +113,10 @@ export class Dispatcher {
 
     private readonly sizes?: SizeStore;
     private readonly measure?: (names: string[]) => Promise<Record<string, TurnStats>>;
+    private readonly fetchMemory: typeof fetch;
 
-    constructor(deps: { github: GitHubApi; runTurn: RunTurn; failures: FailureStore; options: DispatcherOptions; log: Log; turnLog: TurnLog; now?: () => number; mask?: (text: string) => string; sizes?: SizeStore; stats?: (names: string[]) => Promise<Record<string, TurnStats>> }) {
+    constructor(deps: { github: GitHubApi; runTurn: RunTurn; failures: FailureStore; options: DispatcherOptions; log: Log; turnLog: TurnLog; now?: () => number; mask?: (text: string) => string; sizes?: SizeStore; stats?: (names: string[]) => Promise<Record<string, TurnStats>>; fetchMemory?: typeof fetch }) {
+        this.fetchMemory = deps.fetchMemory ?? fetch;
         this.sizes = deps.sizes;
         this.measure = deps.stats;
         this.mask = deps.mask ?? ((text) => text);
@@ -630,6 +633,32 @@ export class Dispatcher {
     }
 
     /** The CRs closed in the last week not valued yet, in the order they closed (the size of the project grows with each). */
+    /**
+     * The knowledge of the repository follows its CRs: the proposals of a CR closed done in force, those
+     * of one discarded refused, those digested from a design source in force (in the memory of the
+     * company, under the repository; nothing without a memory).
+     */
+    private async settleKnowledge(repository: string): Promise<void> {
+        let memory: { url?: string; apiKey?: string } | undefined;
+        try {
+            memory = JSON.parse(this.options.agentEnv.PLAYBOOK_MEMORY ?? '');
+        } catch {
+            return;
+        }
+        if (!memory?.url || !memory.apiKey) return;
+        const stateOf = async (number: number): Promise<IssueState | undefined> => {
+            const issue = await this.github.request<{ state: string; state_reason?: string | null }>('GET', `/repos/${repository}/issues/${number}`).catch(() => undefined);
+            if (!issue) return undefined;
+            return issue.state !== 'closed' ? 'open' : issue.state_reason === 'not_planned' ? 'discarded' : 'done';
+        };
+        try {
+            const { confirmed, rejected } = await knowledgeKeeper({ url: memory.url, apiKey: memory.apiKey }, this.fetchMemory).settle(repository.split('/')[1], stateOf);
+            if (confirmed.length || rejected.length) this.log('knowledge settled', { repository, confirmed: confirmed.length, rejected: rejected.length });
+        } catch (error) {
+            this.log('knowledge not settled', { repository, error: (error as Error).message });
+        }
+    }
+
     private async valuateClosed(repository: string): Promise<void> {
         if (!this.sizes) return;
         const since = new Date(this.now() - 7 * 86_400_000).toISOString();
@@ -684,6 +713,7 @@ The turn of **${agent.name}** stopped without ending (the dispatcher restarted).
             if (!workflow || workflow.paused) return;
             await this.conflicts(repository, workflow);
             await this.valuateClosed(repository);
+            await this.settleKnowledge(repository);
             for (let page = 1; ; page += 1) {
                 const issues = await this.github.request<Issue[]>('GET', `/repos/${repository}/issues?state=open&per_page=100&page=${page}`);
                 for (const issue of issues) {
