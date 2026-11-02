@@ -233,17 +233,22 @@ export class Dispatcher {
         const blockers = await this.github.request<{ state: string }[]>('GET', `/repos/${repository}/issues/${number}/dependencies/blocked_by`).catch(() => []);
         if (blockers.some((blocker) => blocker.state === 'open')) return null;
         // The changes in flight: the agent that starts the code of a CR waits while `maxChanges` other
-        // CRs have their pull request open (a merge, a push, looks at the repository again). Those go on.
-        if (workflow.agents[needs].opensPullRequests && (await this.changesInFlight(repository, number)).length >= (this.options.maxChanges ?? 1)) return null;
+        // CRs have their pull request open (a merge, a push, looks at the repository again). A CR whose
+        // pull request is open is in flight already and always goes on: otherwise CRs past the limit
+        // (the limit lowered, two started together) would wait for each other forever.
+        if (workflow.agents[needs].opensPullRequests) {
+            const inFlight = await this.changesInFlight(repository);
+            if (!inFlight.includes(number) && inFlight.length >= (this.options.maxChanges ?? 1)) return null;
+        }
         return { repository, number, agent: needs, rank: PRIORITY[workflow.priority] ?? PRIORITY.normal, priority: await this.priorityOf(issue), created: Date.parse(issue.created_at) };
     }
 
-    /** The other CRs of the repository with their pull request open (`playbook/issue-<n>`). */
-    private async changesInFlight(repository: string, number: number): Promise<number[]> {
+    /** The CRs of the repository with their pull request open (`playbook/issue-<n>`). */
+    private async changesInFlight(repository: string): Promise<number[]> {
         const pulls = await this.github.request<Array<{ head?: { ref?: string } }>>('GET', `/repos/${repository}/pulls?state=open&per_page=100`).catch(() => []);
         return pulls
             .map((pull) => Number(/^playbook\/issue-(\d+)$/.exec(pull.head?.ref ?? '')?.[1]))
-            .filter((other) => other && other !== number);
+            .filter((other) => other > 0);
     }
 
     /** The Priority of the issue on its board; normal when it has none or it cannot be read. */
