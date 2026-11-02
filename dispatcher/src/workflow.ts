@@ -24,6 +24,8 @@ export interface Workflow {
     answered?: { status: string; finalRoutes: string[] };
     /** An item whose pull request no longer merges into the working branch: to `to` (an agent or the human), with this status. */
     conflicts?: { status: string; to: string };
+    /** The tag of the memory that holds the knowledge of the repository, when it is not its name. */
+    knowledgeTag?: string;
     paused: boolean;
     /** The rank of the repository among the others of the company (`.playbook/state.yaml`): `normal` when not set. */
     priority: 'high' | 'normal' | 'low';

@@ -638,7 +638,7 @@ export class Dispatcher {
      * of one discarded refused, those digested from a design source in force (in the memory of the
      * company, under the repository; nothing without a memory).
      */
-    private async settleKnowledge(repository: string): Promise<void> {
+    private async settleKnowledge(repository: string, tag?: string): Promise<void> {
         let memory: { url?: string; apiKey?: string } | undefined;
         try {
             memory = JSON.parse(this.options.agentEnv.PLAYBOOK_MEMORY ?? '');
@@ -652,7 +652,7 @@ export class Dispatcher {
             return issue.state !== 'closed' ? 'open' : issue.state_reason === 'not_planned' ? 'discarded' : 'done';
         };
         try {
-            const { confirmed, rejected } = await knowledgeKeeper({ url: memory.url, apiKey: memory.apiKey }, this.fetchMemory).settle(repository.split('/')[1], stateOf);
+            const { confirmed, rejected } = await knowledgeKeeper({ url: memory.url, apiKey: memory.apiKey }, this.fetchMemory).settle(tag || repository.split('/')[1], stateOf);
             if (confirmed.length || rejected.length) this.log('knowledge settled', { repository, confirmed: confirmed.length, rejected: rejected.length });
         } catch (error) {
             this.log('knowledge not settled', { repository, error: (error as Error).message });
@@ -713,7 +713,7 @@ The turn of **${agent.name}** stopped without ending (the dispatcher restarted).
             if (!workflow || workflow.paused) return;
             await this.conflicts(repository, workflow);
             await this.valuateClosed(repository);
-            await this.settleKnowledge(repository);
+            await this.settleKnowledge(repository, workflow.knowledgeTag);
             for (let page = 1; ; page += 1) {
                 const issues = await this.github.request<Issue[]>('GET', `/repos/${repository}/issues?state=open&per_page=100&page=${page}`);
                 for (const issue of issues) {
