@@ -4,7 +4,7 @@ import { readWorkflow, workOf, type Workflow } from './workflow.ts';
 import { OutputBuffer } from './output.ts';
 import { answerOf, answeredComment, maybeAnswer, type IssueComment } from './answers.ts';
 import { noteUsage, usageOfOutput, type TurnUsage } from './usage.ts';
-import { BYTES_PER_LINE, VALUE_MARKER, agentSecondsOf, eslocOf, valuationComment, valuationOf, type PullFile } from './valuation.ts';
+import { BYTES_PER_LINE, VALUATION_MODEL, VALUE_MARKER, agentSecondsOf, eslocOf, valuationComment, valuationOf, type PullFile } from './valuation.ts';
 
 // The dispatcher: an issue whose `needs:` label is an agent of the workflow of its repository gets a
 // turn of that agent, one container. One turn per issue at a time, at most `maxParallel` at once,
@@ -69,8 +69,8 @@ type Running = { repository: string; issue: number; agent: string; startedAt?: s
 
 /** The size of each repository in equivalent source lines, and the CRs already valued in it. */
 export interface SizeStore {
-    get(repository: string): { size?: number; valued: number[] };
-    set(repository: string, value: { size?: number; valued: number[] }): void;
+    get(repository: string): { size?: number; valued: number[]; model?: number };
+    set(repository: string, value: { size?: number; valued: number[]; model?: number }): void;
 }
 
 
@@ -549,7 +549,7 @@ export class Dispatcher {
         if (!this.sizes) return false;
         const known = this.sizes.get(repository);
         if (known.valued.includes(number)) return false;
-        const done = (size = known.size) => this.sizes!.set(repository, { ...(size !== undefined ? { size } : {}), valued: [...known.valued, number].slice(-2000) });
+        const done = (size = known.size) => this.sizes!.set(repository, { ...(size !== undefined ? { size } : {}), valued: [...known.valued, number].slice(-2000), model: VALUATION_MODEL });
         try {
             const base = `/repos/${repository}/issues/${number}`;
             const issue = await this.github.request<Issue & { closed_at?: string }>('GET', base);
@@ -560,9 +560,19 @@ export class Dispatcher {
                 comments.push(...batch);
                 if (batch.length < 100) break;
             }
-            if (comments.some((comment) => VALUE_MARKER.test(comment.body ?? ''))) {
-                done();
-                return false;
+            // Valued already: again only with an older model, on the same comment and the same size before it.
+            const valued = comments.find((comment) => VALUE_MARKER.test(comment.body ?? '')) as { id?: number; body?: string | null } | undefined;
+            let previous: { model?: number; sizeBefore?: number } | undefined;
+            if (valued) {
+                try {
+                    previous = JSON.parse(VALUE_MARKER.exec(valued.body ?? '')![1]);
+                } catch {
+                    previous = {};
+                }
+                if ((previous?.model ?? 1) >= VALUATION_MODEL || !valued.id) {
+                    done();
+                    return false;
+                }
             }
             const owner = repository.split('/')[0];
             const pulls = await this.github.request<Array<{ number: number; merged_at?: string | null }>>('GET', `/repos/${repository}/pulls?state=closed&head=${encodeURIComponent(`${owner}:playbook/issue-${number}`)}&per_page=10`);
@@ -577,7 +587,7 @@ export class Dispatcher {
                 files.push(...batch);
                 if (batch.length < 100) break;
             }
-            let before = known.size;
+            let before = previous?.sizeBefore ?? known.size;
             if (before === undefined) {
                 // The first CR valued: the project as it is now, less this CR.
                 const languages = await this.github.request<Record<string, number>>('GET', `/repos/${repository}/languages`).catch(() => ({} as Record<string, number>));
@@ -585,8 +595,13 @@ export class Dispatcher {
                 before = Math.max(0, Math.round(lines - eslocOf(files).esloc));
             }
             const value = valuationOf(pull.number, before, files, agentSecondsOf(comments));
-            await this.github.request('POST', `${base}/comments`, { body: valuationComment(value) });
-            done(value.sizeAfter);
+            if (valued?.id) {
+                await this.github.request('PATCH', `/repos/${repository}/issues/comments/${valued.id}`, { body: valuationComment(value) });
+                done();
+            } else {
+                await this.github.request('POST', `${base}/comments`, { body: valuationComment(value) });
+                done(value.sizeAfter);
+            }
             this.log('CR valued', { issue: issueKey(repository, number), pull: pull.number, esloc: value.esloc, cocomoHours: value.cocomoHours, agentHours: value.agentHours });
             this.announce({ type: 'issue', at: this.at(), repository, issue: number, action: 'valued' });
             return true;
@@ -601,6 +616,9 @@ export class Dispatcher {
         if (!this.sizes) return;
         const since = new Date(this.now() - 7 * 86_400_000).toISOString();
         const closed = await this.github.request<Array<Issue & { closed_at?: string }>>('GET', `/repos/${repository}/issues?state=closed&since=${encodeURIComponent(since)}&per_page=100`).catch(() => []);
+        // A new model: the CRs valued with the older one are looked at again.
+        const stored = this.sizes.get(repository);
+        if ((stored.model ?? 1) < VALUATION_MODEL) this.sizes.set(repository, { ...stored, valued: [], model: VALUATION_MODEL });
         const valued = this.sizes.get(repository).valued;
         const todo = closed
             .filter((issue) => !issue.pull_request && issue.closed_at && !valued.includes(issue.number))

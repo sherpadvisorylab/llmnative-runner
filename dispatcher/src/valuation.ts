@@ -1,9 +1,14 @@
 // What the work of the agents on a CR would have taken a person, written on the CR when it closes:
 // the equivalent source lines of its merged pull request (ESLOC: new lines whole, modified lines a
-// share, tests a share), then two classic estimates side by side, COCOMO on the size of the project
-// (the effort of the CR is the effort of the project after it less the effort before it) and function
-// points by backfiring, against the hours the agents worked. The parameters are starting values, to
-// be tuned against the corrections of people.
+// share, tests a share) at the pace of a developer on a CR already analysed and designed, plus a share
+// for analysis, review and test; against the hours the agents worked. COCOMO on the size of the
+// project (the effort of the CR is the effort of the project after it less the effort before it) and
+// function points by backfiring stay beside it as references: they count a whole lifecycle
+// (requirements, documents, management), several times what a specified CR takes. The parameters are
+// starting values, to be tuned against the corrections of people.
+
+/** The version of the model: a CR valued with an older one is valued again, its comment updated. */
+export const VALUATION_MODEL = 2;
 
 export interface ValuationParams {
     /** COCOMO: effort (person-months) = a × KSLOC^b. */
@@ -16,9 +21,12 @@ export interface ValuationParams {
     /** Function points: source lines per point (backfiring), hours of a person per point. */
     locPerFp: number;
     hoursPerFp: number;
+    /** The estimate: equivalent lines a developer writes in an hour on a specified CR, and the share added for analysis, review and test. */
+    linesPerHour: number;
+    overhead: number;
 }
 
-export const VALUATION_DEFAULTS: ValuationParams = { a: 2.4, b: 1.05, hoursPerMonth: 152, modified: 0.5, test: 0.5, locPerFp: 50, hoursPerFp: 10 };
+export const VALUATION_DEFAULTS: ValuationParams = { a: 2.4, b: 1.05, hoursPerMonth: 152, modified: 0.5, test: 0.5, locPerFp: 50, hoursPerFp: 10, linesPerHour: 25, overhead: 0.3 };
 
 /** The average length of a source line, to read the size of a repository from its bytes per language. */
 export const BYTES_PER_LINE = 35;
@@ -102,6 +110,7 @@ export function agentSecondsOf(comments: ReadonlyArray<{ body?: string | null; c
 }
 
 export interface Valuation {
+    model: number;
     pull: number;
     esloc: number;
     product: number;
@@ -109,12 +118,14 @@ export interface Valuation {
     files: number;
     sizeBefore: number;
     sizeAfter: number;
-    /** Hours of a person: COCOMO on the growth of the project, function points on the code of the CR. */
+    /** Hours of a person on this CR: its lines at the pace of a developer, plus analysis, review and test. */
+    hours: number;
+    /** References, for a whole lifecycle: COCOMO on the growth of the project, function points on the code of the CR. */
     cocomoHours: number;
     fpHours: number;
     functionPoints: number;
     agentHours: number;
-    /** How many times faster than a person (COCOMO): its hours over the hours of the agents. */
+    /** How many times faster than a person: its hours over the hours of the agents. */
     speedup?: number;
 }
 
@@ -127,7 +138,9 @@ export function valuationOf(pull: number, sizeBefore: number, files: readonly Pu
     const cocomo = cocomoHours(sizeAfter, params) - cocomoHours(sizeBefore, params);
     const functionPoints = lines.esloc / params.locPerFp;
     const agentHours = agentSeconds / 3600;
+    const hours = (lines.esloc / params.linesPerHour) * (1 + params.overhead);
     return {
+        model: VALUATION_MODEL,
         pull,
         esloc: lines.esloc,
         product: lines.product,
@@ -135,11 +148,12 @@ export function valuationOf(pull: number, sizeBefore: number, files: readonly Pu
         files: lines.files,
         sizeBefore,
         sizeAfter,
+        hours: round(hours),
         cocomoHours: round(cocomo),
         fpHours: round(functionPoints * params.hoursPerFp),
         functionPoints: round(functionPoints),
         agentHours: round(agentHours, 2),
-        ...(agentHours > 0 ? { speedup: round(cocomo / agentHours) } : {}),
+        ...(agentHours > 0 ? { speedup: round(hours / agentHours) } : {}),
     };
 }
 
@@ -148,15 +162,16 @@ export function valuationComment(value: Valuation): string {
     const hours = (count: number) => `${count.toLocaleString('en-US', { maximumFractionDigits: 1 })} h`;
     return [
         `<!-- playbook-value ${JSON.stringify(value)} -->`,
-        `**Human-equivalent effort** · COCOMO ${hours(value.cocomoHours)} · function points ${hours(value.fpHours)} · agents ${hours(value.agentHours)}${value.speedup ? ` · ×${value.speedup} faster` : ''}`,
+        `**Human-equivalent effort** · ${hours(value.hours)} of a person · agents ${hours(value.agentHours)}${value.speedup ? ` · ×${value.speedup} faster` : ''}`,
         '',
         `| | |`,
         `|---|---|`,
         `| Pull request | #${value.pull}, ${value.files} files counted (lock, generated and workflow files left out) |`,
         `| Equivalent source lines | ${value.esloc} (product ${value.product}, tests ${value.tests}: new lines whole, modified lines and tests a share) |`,
+        `| A person | ${hours(value.hours)}: ${VALUATION_DEFAULTS.linesPerHour} equivalent lines an hour, plus ${Math.round(VALUATION_DEFAULTS.overhead * 100)}% for analysis, review and test |`,
         `| Size of the project | ${value.sizeBefore} → ${value.sizeAfter} equivalent lines |`,
-        `| COCOMO | ${hours(value.cocomoHours)}: the effort of the project after this CR less the effort before it |`,
-        `| Function points | ${value.functionPoints} points, ${hours(value.fpHours)} |`,
+        `| COCOMO (reference) | ${hours(value.cocomoHours)}: the project after this CR less before it, a whole lifecycle |`,
+        `| Function points (reference) | ${value.functionPoints} points, ${hours(value.fpHours)}, a whole lifecycle |`,
         `| Agents | ${hours(value.agentHours)} of turns |`,
         '',
         '<sub>Starting values of the models, to be tuned: a correction of the hours on this CR is welcome.</sub>',

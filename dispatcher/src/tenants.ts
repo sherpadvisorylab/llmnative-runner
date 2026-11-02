@@ -32,7 +32,7 @@ export function masker(config: CompanyConfig) {
 
 /** The failures in a row of each issue of a company, in a JSON file that survives a restart. */
 function fileSizes(path: string): SizeStore {
-    let sizes: Record<string, { size?: number; valued: number[] }> = {};
+    let sizes: Record<string, { size?: number; valued: number[]; model?: number }> = {};
     try {
         sizes = JSON.parse(readFileSync(path, 'utf8'));
     } catch {
