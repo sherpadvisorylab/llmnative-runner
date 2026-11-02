@@ -207,6 +207,9 @@ export class Dispatcher {
         if (this.running.has(key)) return;
         try {
             const candidate = await this.candidate(repository, number, fresh);
+            // Two events of the same issue a moment apart: the other may have started its turn while
+            // this one read GitHub. One turn per issue, never two containers of the same name.
+            if (this.running.has(key)) return;
             if (!candidate) {
                 this.queued.delete(key);
                 return;
@@ -262,9 +265,10 @@ export class Dispatcher {
     private pump(): void {
         while (this.running.size < this.options.maxParallel && this.queued.size) {
             // The project of higher priority first, then the Priority of the issue, then the oldest.
-            const next = [...this.queued.values()].sort((a, b) => a.rank - b.rank || a.priority - b.priority || a.created - b.created)[0];
+            const next = [...this.queued.values()].sort((a, b) => a.rank - b.rank || a.priority - b.priority || a.created - b.created)[0]!;
             const key = issueKey(next.repository, next.number);
             this.queued.delete(key);
+            if (this.running.has(key)) continue;
             this.running.set(key, { repository: next.repository, issue: next.number, agent: next.agent });
             void this.turn(next).finally(() => {
                 this.running.delete(key);
@@ -429,10 +433,18 @@ export class Dispatcher {
                 return opened;
             }
             const status = `${workflow.statusPrefix}${workflow.sources.status}`;
-            const known = await this.github.request<Array<{ title: string }>>('GET', `/repos/${repository}/issues?state=all&labels=${encodeURIComponent(status)}&per_page=100`);
+            // The Actions of the sources already opened, whatever their status now (split, blocked,
+            // closed): by title, among every issue of the repository.
+            const known = new Set<string>();
+            for (let page = 1; page <= 20; page += 1) {
+                const batch = await this.github.request<Array<{ title: string; pull_request?: unknown }>>('GET', `/repos/${repository}/issues?state=all&per_page=100&page=${page}`);
+                for (const issue of batch) if (!issue.pull_request && issue.title.startsWith('Source: ')) known.add(issue.title);
+                if (batch.length < 100) break;
+            }
             for (const folder of folders) {
                 const title = `Source: ${folder}`;
-                if (known.some((issue) => issue.title === title)) continue;
+                if (known.has(title)) continue;
+                known.add(title);
                 const specs = await this.specsOf(repository, folder);
                 const body = [
                     `A source was merged in \`${folder}\`. Digest it: the activities it holds, and the knowledge it settles proposed in the memory, each with its source.`,
