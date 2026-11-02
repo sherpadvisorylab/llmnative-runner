@@ -38,6 +38,9 @@ RUN git clone --quiet --filter=blob:none "${SKILLS_REPOSITORY}" /tmp/skills \
 
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/playbook-designer
 COPY --chmod=0755 design-files.mjs /usr/local/bin/playbook-design-files
+# The memory of the company, read only: the spaces the person chose (memory_search, _list, _read).
+COPY --chmod=0755 memory.mjs /usr/local/lib/playbook/memory.mjs
+RUN ln -s /usr/local/lib/playbook/memory.mjs /usr/local/bin/playbook-memory
 COPY --chown=agent:agent opencode.json /home/agent/.config/opencode/opencode.json
 # How to talk with the studio: questions with choices through the question tool; then the Agent skills
 # block of setup-matt-pocock-skills and the flow of a session: grilling, then the spec, then the PR.

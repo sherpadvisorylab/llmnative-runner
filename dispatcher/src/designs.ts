@@ -40,6 +40,8 @@ interface DesignRecord {
     /** The kit of the session (its method): the image it runs and the skill it starts with. */
     kit?: string;
     model?: string;
+    /** The spaces of the memory of the company the agent may read (never write); none: no memory. */
+    memory?: string[];
     status: DesignStatus;
     createdAt: string;
     lastActive: string;
@@ -65,7 +67,20 @@ interface DesignRecord {
 }
 
 /** A session as the studio sees it: no container, no password. */
-export type DesignView = Pick<DesignRecord, 'id' | 'name' | 'repository' | 'topic' | 'kit' | 'model' | 'status' | 'createdAt' | 'lastActive' | 'pullRequest' | 'error' | 'workSeconds'>;
+export type DesignView = Pick<DesignRecord, 'id' | 'name' | 'repository' | 'topic' | 'kit' | 'model' | 'memory' | 'status' | 'createdAt' | 'lastActive' | 'pullRequest' | 'error' | 'workSeconds'>;
+
+/** How many spaces of the memory a session may read, and what a tag is. */
+const MEMORY_SPACES = 10;
+const MEMORY_TAG = /^[A-Za-z0-9._:-]{1,100}$/;
+
+/**
+ * What a design container gets of the environment of the agents: the connection to the memory only
+ * with the spaces the person chose (read only, by the tool of the image), never without.
+ */
+export function designEnv(agentEnv: Record<string, string>, memory: readonly string[]): Record<string, string> {
+    const { PLAYBOOK_MEMORY: connection, ...rest } = agentEnv;
+    return connection && memory.length ? { ...rest, PLAYBOOK_MEMORY: connection, PLAYBOOK_MEMORY_TAGS: JSON.stringify(memory) } : rest;
+}
 
 /** A message of the conversation, for the studio. */
 /**
@@ -154,7 +169,7 @@ const LIVE: DesignStatus[] = ['starting', 'active', 'paused'];
 
 export const designSlug = (title: string) => title.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'design';
 
-const view = ({ id, name, repository, topic, kit, model, status, createdAt, lastActive, pullRequest, error, workSeconds }: DesignRecord): DesignView => ({ id, ...(name ? { name } : {}), repository, topic, ...(kit ? { kit } : {}), model, status, createdAt, lastActive, workSeconds: Math.round(workSeconds ?? 0), ...(pullRequest ? { pullRequest } : {}), ...(error ? { error } : {}) });
+const view = ({ id, name, repository, topic, kit, model, memory, status, createdAt, lastActive, pullRequest, error, workSeconds }: DesignRecord): DesignView => ({ id, ...(name ? { name } : {}), repository, topic, ...(kit ? { kit } : {}), model, ...(memory?.length ? { memory } : {}), status, createdAt, lastActive, workSeconds: Math.round(workSeconds ?? 0), ...(pullRequest ? { pullRequest } : {}), ...(error ? { error } : {}) });
 
 export class DesignSessions {
     private readonly records = new Map<string, DesignRecord>();
@@ -187,10 +202,12 @@ export class DesignSessions {
     }
 
     /** Starts a session on a repository of the company, with what it is about; `id` may come from the studio (8 hex). */
-    async start(input: { id?: unknown; repository?: unknown; topic?: unknown; model?: unknown; kit?: unknown }): Promise<DesignView> {
+    async start(input: { id?: unknown; repository?: unknown; topic?: unknown; model?: unknown; kit?: unknown; memory?: unknown }): Promise<DesignView> {
         const repository = String(input.repository ?? '');
         const topic = String(input.topic ?? '').trim();
         const model = input.model ? String(input.model) : undefined;
+        // The spaces of the memory the person chose: read only, and only those.
+        const memory = [...new Set((Array.isArray(input.memory) ? input.memory : []).map((tag) => String(tag).trim()).filter(Boolean))];
         const kits = Object.keys(this.options.kits);
         if (!kits.length) throw new DesignError('this runner has no design agent', 404);
         // The kit asked for, or the only one of the runner.
@@ -199,6 +216,7 @@ export class DesignSessions {
         if (!REPOSITORY.test(repository)) throw new DesignError('repository must be owner/name', 400);
         if (!topic) throw new DesignError('topic is required', 400);
         if (model && !MODEL.test(model)) throw new DesignError('model must be provider/model', 400);
+        if (memory.length > MEMORY_SPACES || memory.some((tag) => !MEMORY_TAG.test(tag))) throw new DesignError(`memory must be up to ${MEMORY_SPACES} tags of letters, digits and . _ : -`, 400);
         // The studio may choose the id, to tie its chat to the session before it exists.
         const wanted = typeof input.id === 'string' ? input.id : '';
         if (wanted && (!/^[a-f0-9]{8}$/.test(wanted) || this.records.has(wanted))) throw new DesignError('id must be 8 hex digits, not taken', 400);
@@ -206,7 +224,7 @@ export class DesignSessions {
         if (!(await this.takeSlot(`${this.options.company}/${id}`, id))) throw new DesignError('too many design sessions on this runner: try again later', 429);
         const at = new Date(this.now()).toISOString();
         const record: DesignRecord = {
-            id, name: this.nameFor(repository, topic, kit, at), repository, topic, kit, model, status: 'starting', createdAt: at, lastActive: at,
+            id, name: this.nameFor(repository, topic, kit, at), repository, topic, kit, model, ...(memory.length ? { memory } : {}), status: 'starting', createdAt: at, lastActive: at,
             container: `playbook-design-${this.options.company}-${id}`,
             password: randomBytes(24).toString('base64url'),
         };
@@ -218,7 +236,7 @@ export class DesignSessions {
             record.address = await this.options.host.start({
                 name: record.container,
                 image: this.options.kits[kit].image,
-                env: { ...this.options.agentEnv, GITHUB_REPOSITORY: repository, GITHUB_TOKEN: token, OPENCODE_SERVER_PASSWORD: record.password },
+                env: { ...designEnv(this.options.agentEnv, memory), GITHUB_REPOSITORY: repository, GITHUB_TOKEN: token, OPENCODE_SERVER_PASSWORD: record.password },
             });
             await this.ready(record);
             record.session = (await this.call<{ id: string }>(record, 'POST', '/session', { title: topic.slice(0, 80) })).id;
@@ -714,7 +732,7 @@ export function errorText(error: { name?: string; data?: { message?: string } } 
  * The conversation of a session as a source: who asked what, the answers, what the agent did, as it
  * went. The first message of the person is the topic; a question asked with the tool reads with its choices.
  */
-export function transcriptOf(record: Pick<DesignRecord, 'id' | 'repository' | 'topic' | 'kit' | 'model' | 'createdAt'>, messages: readonly DesignMessage[], title: string, finishedAt: string): string {
+export function transcriptOf(record: Pick<DesignRecord, 'id' | 'repository' | 'topic' | 'kit' | 'model' | 'memory' | 'createdAt'>, messages: readonly DesignMessage[], title: string, finishedAt: string): string {
     const lines = [
         `# ${title}`,
         '',
@@ -722,6 +740,7 @@ export function transcriptOf(record: Pick<DesignRecord, 'id' | 'repository' | 't
         `- Method: ${record.kit ?? 'design'}`,
         ...(record.model ? [`- Model: ${record.model}`] : []),
         `- Repository: ${record.repository}`,
+        ...(record.memory?.length ? [`- Memory read: ${record.memory.join(', ')}`] : []),
         `- Session: ${record.id}, from ${record.createdAt} to ${finishedAt}`,
         ...usageLine(messages),
         '',
