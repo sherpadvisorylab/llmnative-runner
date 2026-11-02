@@ -29,6 +29,8 @@ export interface DockerOptions {
     image: string;
     /** `--memory` of each turn, e.g. 4g. */
     memory?: string;
+    /** `--cpus` of each turn, e.g. 2.5. */
+    cpus?: number;
     /** `--network` of each turn. */
     network?: string;
     docker?: string;
@@ -88,6 +90,7 @@ export function dockerRunner(options: DockerOptions): { runTurn: RunTurn; cleanU
             const args = [
                 'run', '--rm', '--name', spec.name, '--label', `${TURN_LABEL}=${options.owner}`,
                 ...(options.memory ? ['--memory', options.memory] : []),
+                ...(options.cpus ? ['--cpus', String(options.cpus)] : []),
                 ...(options.network ? ['--network', options.network] : []),
                 ...Object.keys(spec.env).flatMap((name) => ['-e', name]),
                 options.image,

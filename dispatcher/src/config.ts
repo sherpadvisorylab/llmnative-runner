@@ -40,6 +40,8 @@ export interface MachineConfig {
     failuresToBlock: number;
     reconcileMinutes: number;
     memory?: string;
+    /** The cores of each turn (AGENT_CPUS), e.g. 2.5; none: no limit. */
+    cpus?: number;
     network?: string;
     /** The release of the runner (its images), baked in its image. */
     version: string;
@@ -102,6 +104,8 @@ export function readMachineConfig(env: Vars = process.env): MachineConfig {
         failuresToBlock: positive(env, 'FAILURES_TO_BLOCK', 2),
         reconcileMinutes: positive(env, 'RECONCILE_MINUTES', 10),
         memory: env.AGENT_MEMORY || undefined,
+        // The cores of a turn (docker --cpus): past them it slows down, never stops. None: no limit.
+        cpus: Number(env.AGENT_CPUS) > 0 ? Number(env.AGENT_CPUS) : undefined,
         network: env.AGENT_NETWORK || undefined,
         version: env.PLAYBOOK_RUNNER_VERSION || 'dev',
         registry: (env.IMAGE_REGISTRY || 'ghcr.io/sherpadvisorylab').replace(/\/+$/, ''),

@@ -45,7 +45,7 @@ async function main() {
         machine,
         // Each company its own runner of turns: its turns carry its App id, so a restart clears its own only.
         runTurn: (config) => {
-            const docker = dockerRunner({ image: machine.image, memory: machine.memory, network: machine.network, owner: `app-${config.appId}` });
+            const docker = dockerRunner({ image: machine.image, memory: machine.memory, cpus: machine.cpus, network: machine.network, owner: `app-${config.appId}` });
             return (spec) => limit(() => docker.runTurn(spec));
         },
         stats: (names) => containerStats(names),
