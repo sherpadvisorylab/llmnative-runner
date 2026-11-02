@@ -102,6 +102,10 @@ export function agentSecondsOf(comments: ReadonlyArray<{ body?: string | null; c
         } catch {
             measured = undefined;
         }
+        if (move.event === 'interrupted') {
+            if (move.agent) claims.delete(move.agent);
+            continue;
+        }
         if (typeof measured === 'number') seconds += measured;
         else if (move.event && move.event !== 'claim' && move.agent && claims.has(move.agent) && !Number.isNaN(at)) seconds += Math.max(0, (at - claims.get(move.agent)!) / 1000);
         if (move.agent) claims.delete(move.agent);

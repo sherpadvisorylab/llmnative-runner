@@ -2,7 +2,7 @@ import type { GitHubApi } from './github.ts';
 import type { RunTurn } from './docker.ts';
 import { readWorkflow, workOf, type Workflow } from './workflow.ts';
 import { OutputBuffer } from './output.ts';
-import { answerOf, answeredComment, maybeAnswer, type IssueComment } from './answers.ts';
+import { answerOf, answeredComment, interruptedClaim, maybeAnswer, type IssueComment } from './answers.ts';
 import { noteUsage, usageOfOutput, type TurnUsage } from './usage.ts';
 import { BYTES_PER_LINE, VALUATION_MODEL, VALUE_MARKER, agentSecondsOf, eslocOf, valuationComment, valuationOf, type PullFile } from './valuation.ts';
 
@@ -41,6 +41,7 @@ type Issue = {
     state: string;
     created_at: string;
     node_id?: string;
+    comments?: number;
     pull_request?: unknown;
     labels: Array<string | { name?: string }>;
 };
@@ -643,6 +644,40 @@ export class Dispatcher {
         for (const issue of todo) await this.valuate(repository, issue.number);
     }
 
+    /**
+     * An issue claimed by a turn that stopped without ending (the dispatcher restarted and removed it):
+     * back to the status it had before the claim, with a comment, so nobody reads it as at work. The
+     * reconciliation then starts the turn again.
+     */
+    private async resumeInterrupted(repository: string, workflow: Workflow, issue: Issue): Promise<void> {
+        const key = issueKey(repository, issue.number);
+        const { needs, status } = workOf(workflow, issue.labels);
+        if (!needs || this.running.has(key) || this.queued.has(key)) return;
+        const agent = workflow.agents[needs];
+        if (!agent || status !== (agent.claim ?? `in-${needs}`)) return;
+        try {
+            const base = `/repos/${repository}/issues/${issue.number}`;
+            // The last two pages of the comments: the claim and the move before it.
+            const last = Math.max(1, Math.ceil((typeof issue.comments === 'number' ? issue.comments : 0) / 100));
+            const comments: IssueComment[] = [];
+            for (const page of last > 1 ? [last - 1, last] : [last]) comments.push(...await this.github.request<IssueComment[]>('GET', `${base}/comments?per_page=100&page=${page}`));
+            const interrupted = interruptedClaim(needs, comments);
+            if (!interrupted || this.running.has(key)) return;
+            if (interrupted.from && interrupted.from !== status) {
+                await this.github.request('DELETE', `${base}/labels/${encodeURIComponent(workflow.statusPrefix + status)}`).catch(() => undefined);
+                await this.github.request('POST', `${base}/labels`, { labels: [workflow.statusPrefix + interrupted.from] });
+            }
+            const back = interrupted.from && interrupted.from !== status ? ` It goes back to ${workflow.statusPrefix}${interrupted.from}` : ' It';
+            await this.github.request('POST', `${base}/comments`, {
+                body: `${MARKER({ event: 'interrupted', agent: needs, ...(interrupted.from ? { status: interrupted.from } : {}) })}
+The turn of **${agent.name}** stopped without ending (the dispatcher restarted).${back} runs again when a worker is free.`,
+            });
+            this.log('interrupted turn resumed', { issue: key, agent: needs, status: interrupted.from });
+        } catch (error) {
+            this.log('interrupted turn not resumed', { issue: key, error: (error as Error).message });
+        }
+    }
+
     async reconcileRepository(repository: string): Promise<void> {
         try {
             const workflow = await this.workflowOf(repository, true);
@@ -653,7 +688,9 @@ export class Dispatcher {
                 const issues = await this.github.request<Issue[]>('GET', `/repos/${repository}/issues?state=open&per_page=100&page=${page}`);
                 for (const issue of issues) {
                     const { needs } = workOf(workflow, issue.labels);
-                    if (!issue.pull_request && needs && workflow.agents[needs]) await this.consider(repository, issue.number);
+                    if (issue.pull_request || !needs || !workflow.agents[needs]) continue;
+                    await this.resumeInterrupted(repository, workflow, issue);
+                    await this.consider(repository, issue.number);
                 }
                 if (issues.length < 100) break;
             }

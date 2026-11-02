@@ -7,7 +7,7 @@ import type { Workflow } from './workflow.ts';
 const MARKER = /<!-- playbook (\{[^\n]*?\}) -->/;
 
 /** The moves the comments record: who works on the issue changes with each. A note of a person is not one. */
-const MOVES = ['leave', 'limit', 'handoff', 'claim', 'split', 'open', 'report', 'close', 'turn-failed', 'conflict', 'discard'];
+const MOVES = ['leave', 'limit', 'handoff', 'claim', 'split', 'open', 'report', 'close', 'turn-failed', 'conflict', 'discard', 'interrupted'];
 
 export type IssueComment = { body?: string | null; user?: { login?: string; type?: string } | null };
 
@@ -20,6 +20,19 @@ const markerOf = (body: string | null | undefined): { event?: string; [key: stri
         return null;
     }
 };
+
+/**
+ * A claim of `agent` that no move followed: its turn stopped without ending (the dispatcher restarted).
+ * `from`: the status it had before the claim (written on the claim, else the status of the move before).
+ */
+export function interruptedClaim(agent: string, comments: IssueComment[]): { from?: string } | null {
+    const moves = comments.map((comment) => markerOf(comment.body)).filter((marker) => !!marker && MOVES.includes(String(marker.event)));
+    const last = moves.at(-1);
+    if (!last || last.event !== 'claim' || last.agent !== agent) return null;
+    if (typeof last.from === 'string') return { from: last.from };
+    const before = moves.at(-2);
+    return typeof before?.status === 'string' ? { from: before.status } : {};
+}
 
 /** Whether a new comment may be an answer: a person's plain comment, or a note of a person from the studio. */
 export function maybeAnswer(comment: IssueComment): boolean {
