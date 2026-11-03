@@ -750,7 +750,7 @@ ${body}`,
             return issue.state !== 'closed' ? 'open' : issue.state_reason === 'not_planned' ? 'discarded' : 'done';
         };
         try {
-            const { confirmed, rejected } = await knowledgeKeeper({ url: memory.url, apiKey: memory.apiKey }, this.fetchMemory).settle(tag || repository.split('/')[1], stateOf);
+            const { confirmed, rejected } = await knowledgeKeeper({ url: memory.url, apiKey: memory.apiKey }, this.fetchMemory).settle(tag || repository.toLowerCase().replace('/', ':'), stateOf);
             if (confirmed.length || rejected.length) this.log('knowledge settled', { repository, confirmed: confirmed.length, rejected: rejected.length });
         } catch (error) {
             this.log('knowledge not settled', { repository, error: (error as Error).message });
