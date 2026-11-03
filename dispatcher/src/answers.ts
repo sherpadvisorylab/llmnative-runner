@@ -7,7 +7,7 @@ import type { Workflow } from './workflow.ts';
 const MARKER = /<!-- playbook (\{[^\n]*?\}) -->/;
 
 /** The moves the comments record: who works on the issue changes with each. A note of a person is not one. */
-const MOVES = ['leave', 'limit', 'handoff', 'claim', 'split', 'open', 'report', 'close', 'turn-failed', 'conflict', 'discard', 'interrupted'];
+const MOVES = ['leave', 'limit', 'handoff', 'claim', 'split', 'open', 'report', 'close', 'turn-failed', 'conflict', 'discard', 'interrupted', 'gate'];
 
 export type IssueComment = { body?: string | null; user?: { login?: string; type?: string } | null };
 

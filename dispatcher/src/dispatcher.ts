@@ -5,6 +5,7 @@ import { OutputBuffer } from './output.ts';
 import { answerOf, answeredComment, interruptedClaim, maybeAnswer, type IssueComment } from './answers.ts';
 import { noteUsage, usageOfOutput, type TurnUsage } from './usage.ts';
 import { knowledgeKeeper, type IssueState } from './knowledge.ts';
+import { billedMinutes, failingLines, failureReport, gateVerdict, pendingGate, type GateComment, type RunJob, type WorkflowRun } from './ciGate.ts';
 import { BYTES_PER_LINE, VALUATION_MODEL, VALUE_MARKER, agentSecondsOf, eslocOf, valuationComment, valuationOf, type PullFile } from './valuation.ts';
 
 // The dispatcher: an issue whose `needs:` label is an agent of the workflow of its repository gets a
@@ -88,6 +89,8 @@ const SPEC_MAX = 50_000;
 const MARKER = (data: object) => `<!-- playbook ${JSON.stringify(data)} -->`;
 /** When GitHub has not yet worked out whether a pull request merges: looked at again after this. */
 const CONFLICTS_AGAIN_MS = 60_000;
+/** While an item waits at the CI gate, its repository is looked at again after this. */
+const GATE_AGAIN_MS = 60_000;
 export const issueKey = (repository: string, number: number) => `${repository}#${number}`;
 
 export class Dispatcher {
@@ -109,6 +112,7 @@ export class Dispatcher {
     private idle: Array<() => void> = [];
     /** The repositories whose pull requests are looked at again shortly (GitHub was still working out whether they merge). */
     private readonly conflictsAgain = new Set<string>();
+    private readonly gatesAgain = new Set<string>();
     lastReconcile?: string;
 
     private readonly sizes?: SizeStore;
@@ -549,6 +553,100 @@ export class Dispatcher {
         return sent;
     }
 
+    /**
+     * The items waiting at the CI gate (`needs:ci`): the runs of Actions on the commit each was handed over
+     * with decide where it goes. On to the agent of its route when they passed (or the repository has no
+     * Actions), back to the agent that left with the status of a failed CI and what failed, to a person
+     * past the time the CI may take. While any waits, the repository is looked at again every minute.
+     * Returns the items moved.
+     */
+    async ciGates(repository: string, workflow: Workflow): Promise<number[]> {
+        const moved: number[] = [];
+        const ci = workflow.ci;
+        if (!ci) return moved;
+        const waiting = await this.github.request<Issue[]>('GET', `/repos/${repository}/issues?state=open&labels=${encodeURIComponent(workflow.needsPrefix + ci.needs)}&per_page=100`).catch(() => [] as Issue[]);
+        let pending = false;
+        let workflows: number | undefined;
+        for (const issue of waiting.filter((candidate) => !candidate.pull_request)) {
+            const key = issueKey(repository, issue.number);
+            try {
+                const base = `/repos/${repository}/issues/${issue.number}`;
+                const last = Math.max(1, Math.ceil((typeof issue.comments === 'number' ? issue.comments : 0) / 100));
+                const comments: GateComment[] = [];
+                for (const page of last > 1 ? [last - 1, last] : [last]) comments.push(...await this.github.request<GateComment[]>('GET', `${base}/comments?per_page=100&page=${page}`));
+                const gate = pendingGate(comments);
+                // Put there by a person, not by a route: nothing to wait for, a person decides.
+                if (!gate) continue;
+                const route = ci.routes[gate.route] ?? { from: gate.from, to: gate.to, status: gate.status };
+                const runs = (await this.github.request<{ workflow_runs?: WorkflowRun[] }>('GET', `/repos/${repository}/actions/runs?head_sha=${gate.sha}&per_page=50`)).workflow_runs ?? [];
+                if (!runs.length && workflows === undefined) workflows = (await this.github.request<{ total_count?: number }>('GET', `/repos/${repository}/actions/workflows?per_page=1`).catch(() => ({ total_count: 0 }))).total_count ?? 0;
+                const verdict = gateVerdict(runs, workflows ?? 1, this.now() - gate.at, ci.timeoutMinutes);
+                if (verdict === 'wait') {
+                    pending = true;
+                    continue;
+                }
+                const jobs: RunJob[] = [];
+                for (const run of runs) jobs.push(...((await this.github.request<{ jobs?: RunJob[] }>('GET', `/repos/${repository}/actions/runs/${run.id}/jobs?per_page=100`).catch(() => ({ jobs: [] }))).jobs ?? []));
+                const minutes = billedMinutes(jobs);
+                const short = gate.sha.slice(0, 7);
+                const runLinks = runs.map((run) => `[${run.name ?? 'run'}](${run.html_url})`).join(', ');
+                const fromName = workflow.agents[route.from]?.name ?? route.from;
+                const toName = route.to === 'closed' ? 'Closed' : workflow.agents[route.to]?.name ?? route.to;
+                let needs: string;
+                let status: string;
+                let body: string;
+                if (verdict === 'passed' || verdict === 'none') {
+                    needs = route.to === 'closed' ? 'none' : route.to;
+                    status = route.status;
+                    body = verdict === 'none'
+                        ? `**CI** → **${toName}** · ${workflow.statusPrefix}${status} · no CI in this repository: the gate passes.`
+                        : `**CI** → **${toName}** · ${workflow.statusPrefix}${status} · passed on ${short} (${minutes} min)${runLinks ? ` · ${runLinks}` : ''}`;
+                } else if (verdict === 'failed') {
+                    needs = route.from;
+                    status = ci.failed;
+                    const failed: Array<{ job: RunJob; lines: string[] }> = [];
+                    for (const job of jobs.filter((candidate) => candidate.conclusion && !['success', 'skipped', 'neutral'].includes(candidate.conclusion)).slice(0, 3)) {
+                        const log = this.github.text ? await this.github.text(`/repos/${repository}/actions/jobs/${job.id}/logs`).catch(() => '') : '';
+                        failed.push({ job, lines: log ? failingLines(log) : [] });
+                    }
+                    body = `**CI** → **${fromName}** · ${workflow.statusPrefix}${status} · failed on ${short} (${minutes} min)${runLinks ? ` · ${runLinks}` : ''}
+
+${failureReport(failed)}`;
+                } else {
+                    needs = workflow.human;
+                    status = workflow.blocked;
+                    body = `**CI** → **Human** · ${workflow.statusPrefix}${status} · no result of the CI on ${short} in ${ci.timeoutMinutes} minutes${runLinks ? ` · ${runLinks}` : ''}. Check that GitHub Actions runs on the pull requests of this repository, then hand it back to ${fromName}.`;
+                }
+                const fresh = await this.github.request<Issue>('GET', base);
+                // Moved meanwhile by a person: theirs to decide.
+                if (fresh.state !== 'open' || workOf(workflow, fresh.labels).needs !== ci.needs) continue;
+                for (const label of workOf(workflow, fresh.labels).names.filter((name) => name.startsWith(workflow.needsPrefix) || name.startsWith(workflow.statusPrefix))) {
+                    await this.github.request('DELETE', `${base}/labels/${encodeURIComponent(label)}`).catch(() => undefined);
+                }
+                await this.github.request('POST', `${base}/labels`, { labels: [workflow.needsPrefix + needs, workflow.statusPrefix + status] });
+                await this.github.request('POST', `${base}/comments`, {
+                    body: `${MARKER({ event: 'gate', agent: 'dispatcher', route: gate.route, result: verdict, to: needs, status, sha: gate.sha, minutes })}
+${body}`,
+                });
+                if (needs === 'none') await this.github.request('PATCH', base, { state: 'closed', state_reason: 'completed' });
+                moved.push(issue.number);
+                this.log('ci gate settled', { issue: key, verdict, minutes, to: needs });
+                this.announce({ type: 'issue', at: this.at(), repository, issue: issue.number, action: `ci-${verdict}` });
+            } catch (error) {
+                pending = true;
+                this.log('could not look at the CI of an item', { issue: key, error: (error as Error).message });
+            }
+        }
+        if (pending && !this.gatesAgain.has(repository)) {
+            this.gatesAgain.add(repository);
+            setTimeout(() => {
+                this.gatesAgain.delete(repository);
+                void this.reconcileRepository(repository);
+            }, GATE_AGAIN_MS).unref?.();
+        }
+        return moved;
+    }
+
     /** What the container of the running turn of an issue takes now, measured when asked; null when none runs. */
     async statsOf(repository: string, issue: number): Promise<TurnStats | null> {
         const turn = this.running.get(issueKey(repository, issue));
@@ -712,6 +810,7 @@ The turn of **${agent.name}** stopped without ending (the dispatcher restarted).
             const workflow = await this.workflowOf(repository, true);
             if (!workflow || workflow.paused) return;
             await this.conflicts(repository, workflow);
+            await this.ciGates(repository, workflow);
             await this.valuateClosed(repository);
             await this.settleKnowledge(repository, workflow.knowledgeTag);
             for (let page = 1; ; page += 1) {

@@ -26,6 +26,8 @@ export interface Workflow {
     conflicts?: { status: string; to: string };
     /** The tag of the memory that holds the knowledge of the repository, when it is not its name. */
     knowledgeTag?: string;
+    /** The CI gate: the routes through it, the status of a failed CI, the minutes it may take. */
+    ci?: { needs: string; failed: string; timeoutMinutes: number; routes: Record<string, { from: string; to: string; status: string }> };
     paused: boolean;
     /** The rank of the repository among the others of the company (`.playbook/state.yaml`): `normal` when not set. */
     priority: 'high' | 'normal' | 'low';

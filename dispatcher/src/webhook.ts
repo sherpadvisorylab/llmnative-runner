@@ -61,6 +61,8 @@ export function actionOf(event: string | undefined, payload: { action?: string; 
         const { body = '', user = {} } = payload.comment;
         return { kind: 'comment', repository, number: payload.issue.number, comment: { body, user: { login: user.login ?? '', type: user.type ?? '' } } };
     }
+    // A run of Actions that ended: an item waiting at the CI gate may go on (or back).
+    if (event === 'workflow_run' && payload.action === 'completed') return { kind: 'repository', repository };
     // A new version of the workflow, or a pause, comes with a push; a source merged too.
     if (event === 'push') {
         const sources = sourcesOf(payload);

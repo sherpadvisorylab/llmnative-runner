@@ -18,6 +18,8 @@ export interface GitHubApi {
     graphql<T>(query: string, variables?: Record<string, unknown>): Promise<T>;
     /** A token for one turn: one repository, the permissions of the agent; valid for an hour. */
     turnToken(repository: string, permissions: TokenPermissions): Promise<string>;
+    /** An answer that is text, not JSON (the log of a job of Actions). */
+    text?(path: string): Promise<string>;
 }
 
 export type AppCredentials = { appId: string; privateKey: string; installationId?: number };
@@ -105,6 +107,12 @@ export function createGitHub(app: AppCredentials, fetchGitHub: typeof fetch = re
         },
         async turnToken(repository: string, permissions: TokenPermissions) {
             return (await mint({ repositories: [repository.split('/')[1]], permissions })).token;
+        },
+        async text(path: string) {
+            // A log redirects to storage that needs no token: fetch drops it on the way.
+            const response = await fetchGitHub(`${API}${path}`, { headers: { 'user-agent': 'llmnative-playbook-dispatcher', 'x-github-api-version': '2022-11-28', authorization: `Bearer ${await token()}` } });
+            if (!response.ok) throw new GitHubError(`GitHub answered ${response.status}`, response.status);
+            return response.text();
         },
     };
 }
