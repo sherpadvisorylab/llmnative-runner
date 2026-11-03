@@ -49,11 +49,11 @@ services:
     image: ghcr.io/sherpadvisorylab/playbook-design-bmad:latest
     profiles: ["build"]
 
-  design-cartografo:
+  design-galileo:
     build:
       context: ./designer
-      dockerfile: Dockerfile.cartografo
-    image: ghcr.io/sherpadvisorylab/playbook-design-cartografo:latest
+      dockerfile: Dockerfile.galileo
+    image: ghcr.io/sherpadvisorylab/playbook-design-galileo:latest
     profiles: ["build"]
 
   # HTTPS on plain Docker; on Coolify leave it out and give the service dispatcher the domain.

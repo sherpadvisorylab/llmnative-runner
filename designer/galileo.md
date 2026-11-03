@@ -1,6 +1,6 @@
-## The flow of a Cartografo session in Playbook
+## The flow of a Galileo session in Playbook
 
-1. The session starts with `cartografo` on what the person said they want mapped: the whole software,
+1. The session starts with `galileo` on what the person said they want mapped: the whole software,
    or a part of it.
 2. Survey first, then the notes of the memory, then the questions, area by area: the skill says how.
 3. The documents go to `as-built/` only; the files the person gave are in `as-built/inputs/` and stay

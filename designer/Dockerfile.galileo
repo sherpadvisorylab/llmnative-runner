@@ -1,5 +1,5 @@
-# The design agent Cartografo: one container per design session, as the Matt image (Dockerfile), with
-# the skill of Playbook that maps a software that already exists (runner/designer/cartografo). It reads
+# The design agent Galileo: one container per design session, as the Matt image (Dockerfile), with
+# the skill of Playbook that maps a software that already exists (runner/designer/galileo). It reads
 # the clone, the spaces of the memory the person chose and the files they gave, asks only what those
 # cannot tell, and writes the as-built documents in `as-built/`, which alone go to the pull request.
 FROM node:24-bookworm-slim
@@ -8,7 +8,7 @@ FROM node:24-bookworm-slim
 ARG OPENCODE_VERSION=1.19.3
 # The skill is of this repository: its version is the release of the runner.
 ARG RUNNER_VERSION=dev
-ARG SKILLS="cartografo"
+ARG SKILLS="galileo"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates tini curl ripgrep \
@@ -18,16 +18,16 @@ RUN apt-get update \
 
 RUN useradd --create-home --uid 10001 agent && mkdir -p /work/notes && chown -R agent:agent /work
 
-COPY --chown=agent:agent cartografo/ /home/agent/.config/opencode/skills/cartografo/
+COPY --chown=agent:agent galileo/ /home/agent/.config/opencode/skills/galileo/
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/playbook-designer
 COPY --chmod=0755 design-files.mjs /usr/local/bin/playbook-design-files
 # The memory of the company, read only: the spaces the person chose (memory_search, _list, _read).
 COPY --chmod=0755 memory.mjs /usr/local/lib/playbook/memory.mjs
 RUN ln -s /usr/local/lib/playbook/memory.mjs /usr/local/bin/playbook-memory
 COPY --chown=agent:agent opencode.json /home/agent/.config/opencode/opencode.json
-# How to talk with the studio, then the flow of a Cartografo session.
-COPY --chown=agent:agent AGENTS.md cartografo.md /tmp/agents/
-RUN cat /tmp/agents/AGENTS.md /tmp/agents/cartografo.md > /home/agent/.config/opencode/AGENTS.md \
+# How to talk with the studio, then the flow of a Galileo session.
+COPY --chown=agent:agent AGENTS.md galileo.md /tmp/agents/
+RUN cat /tmp/agents/AGENTS.md /tmp/agents/galileo.md > /home/agent/.config/opencode/AGENTS.md \
     && chown agent:agent /home/agent/.config/opencode/AGENTS.md && rm -rf /tmp/agents
 
 USER agent
@@ -36,11 +36,11 @@ ENV HOME=/home/agent
 # What goes to the pull request: the as-built documents (and the files the person gave, in inputs/).
 ENV PLAYBOOK_DESIGN_OUTPUTS=as-built
 EXPOSE 4096
-LABEL org.opencontainers.image.title="playbook-design-cartografo" \
-      org.opencontainers.image.description="The design agent Cartografo of Playbook: maps a software that already exists, from its code, the memory and the person" \
-      playbook.design.kit="cartografo" \
-      playbook.design.name="Cartografo" \
-      playbook.design.command="cartografo" \
+LABEL org.opencontainers.image.title="playbook-design-galileo" \
+      org.opencontainers.image.description="The design agent Galileo of Playbook: maps a software that already exists, from its code, the memory and the person" \
+      playbook.design.kit="galileo" \
+      playbook.design.name="Galileo" \
+      playbook.design.command="galileo" \
       playbook.design.skills="${SKILLS}" \
       playbook.design.source="https://github.com/sherpadvisorylab/llmnative-playbook" \
       playbook.design.commit="${RUNNER_VERSION}" \
