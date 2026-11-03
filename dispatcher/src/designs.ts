@@ -412,12 +412,15 @@ export class DesignSessions {
         const record = this.find(id);
         if (record.status !== 'active') {
             try {
-                return JSON.parse(readFileSync(this.messagesOf(record), 'utf8')) as DesignMessage[];
+                const kept = JSON.parse(readFileSync(this.messagesOf(record), 'utf8')) as DesignMessage[];
+                this.worked(record, kept);
+                return kept;
             } catch {
                 return [];
             }
         }
         const messages = await this.liveMessages(record);
+        this.worked(record, messages);
         try {
             mkdirSync(this.messagesOf(record).replace(/\/[^/]+$/, ''), { recursive: true });
             writeFileSync(this.messagesOf(record), JSON.stringify(messages));
@@ -425,6 +428,14 @@ export class DesignSessions {
             // A copy only: the conversation is in the container.
         }
         return messages;
+    }
+
+    /** The time it worked, from its replies: never more than they took (a count made before, corrected). */
+    private worked(record: DesignRecord, messages: readonly DesignMessage[]) {
+        const worked = workSecondsOf(messages);
+        if (!messages.some((message) => message.usage?.seconds !== undefined) || worked === Math.round(record.workSeconds ?? 0)) return;
+        record.workSeconds = worked;
+        this.save();
     }
 
     private messagesOf(record: DesignRecord) {
@@ -612,15 +623,17 @@ export class DesignSessions {
         return kit.command;
     }
 
-    /** The time the agent works: from busy to idle, added to the session. */
+    /**
+     * The time the agent works, counted again from its replies once it stops (`messages`): the events
+     * reach the dispatcher only while someone follows the session, so a span from busy to idle would
+     * count the hours nobody followed it.
+     */
     private count(record: DesignRecord, busy: boolean) {
-        const now = this.now();
-        if (busy && !record.busySince) record.busySince = new Date(now).toISOString();
-        else if (!busy && record.busySince) {
-            record.workSeconds = (record.workSeconds ?? 0) + Math.max(0, now - Date.parse(record.busySince)) / 1000;
+        if (record.busySince) {
             delete record.busySince;
-        } else return;
-        this.save();
+            this.save();
+        }
+        if (!busy) void this.messages(record.id).catch(() => undefined);
     }
 
     private slot(record: DesignRecord) {
@@ -811,6 +824,35 @@ export function questionsWithAnswers(questions: readonly Question[], answers: re
         const answer = answers?.[index];
         return `${questionText([question])}\n\n> **Answer:** ${answer?.length ? answer.join(', ') : '_(not answered)_'}`;
     }).join('\n\n');
+}
+
+/** Replies closer than this are one stretch of work: the commands the agent runs between its steps. */
+const WORK_GAP_MS = 60_000;
+
+/**
+ * The seconds an agent worked in a conversation: the time of its replies (from when each started to when
+ * it ended), the replies one after the other joined into one stretch with what ran between them.
+ */
+export function workSecondsOf(messages: readonly Pick<DesignMessage, 'role' | 'usage'>[]): number {
+    const spans = messages
+        .filter((message) => message.role === 'assistant' && message.usage?.at && typeof message.usage.seconds === 'number')
+        .map((message) => {
+            const start = Date.parse(message.usage!.at!);
+            return [start, start + message.usage!.seconds! * 1000] as const;
+        })
+        .filter(([start]) => Number.isFinite(start))
+        .sort((left, right) => left[0] - right[0]);
+    let total = 0;
+    let current: [number, number] | null = null;
+    for (const [start, end] of spans) {
+        if (current && start - current[1] <= WORK_GAP_MS) current[1] = Math.max(current[1], end);
+        else {
+            if (current) total += current[1] - current[0];
+            current = [start, end];
+        }
+    }
+    if (current) total += current[1] - current[0];
+    return Math.round(total / 1000);
 }
 
 /** The usage of a reply from what opencode keeps of the message. */
