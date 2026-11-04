@@ -77,6 +77,16 @@ interface DesignRecord {
 /** A session as the studio sees it: no container, no password. */
 export type DesignView = Pick<DesignRecord, 'id' | 'name' | 'repository' | 'topic' | 'kit' | 'model' | 'memory' | 'inputs' | 'status' | 'createdAt' | 'lastActive' | 'pullRequest' | 'error' | 'workSeconds'>;
 
+/**
+ * A session going from one company to another (its repository transferred to another organization of
+ * GitHub): ended only, with the copies of its conversation and documents; never its container or password.
+ */
+export type DesignTransfer = {
+    design: Pick<DesignRecord, 'id' | 'name' | 'repository' | 'topic' | 'kit' | 'model' | 'memory' | 'inputs' | 'status' | 'createdAt' | 'lastActive' | 'pullRequest' | 'error' | 'workSeconds' | 'opened' | 'commands'>;
+    messages: DesignMessage[];
+    files?: { at: string; files: DesignFile[] };
+};
+
 /** The files a person may give a session: text, a name of letters, digits and . _ -, up to 1 MB each and 3 MB in all. */
 const INPUT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
 const MAX_INPUT = 1024 * 1024;
@@ -563,6 +573,106 @@ export class DesignSessions {
         record.archived = true;
         this.save();
         return view(record);
+    }
+
+    /**
+     * The ended sessions of a repository, with their conversation and documents, to move to another
+     * company; the live ones only counted (they are ended first, or left here).
+     */
+    exportOf(repository: string): { designs: DesignTransfer[]; live: number } {
+        if (!REPOSITORY.test(repository)) throw new DesignError('repository must be owner/name', 400);
+        const records = [...this.records.values()].filter((record) => !record.archived && record.repository.toLowerCase() === repository.toLowerCase());
+        const read = <T,>(path: string): T | undefined => {
+            try {
+                return JSON.parse(readFileSync(path, 'utf8')) as T;
+            } catch {
+                return undefined;
+            }
+        };
+        return {
+            live: records.filter((record) => LIVE.includes(record.status)).length,
+            designs: records.filter((record) => !LIVE.includes(record.status)).map((record) => {
+                const { id, name, topic, kit, model, memory, inputs, status, createdAt, lastActive, pullRequest, error, workSeconds, opened, commands } = record;
+                const files = read<{ at: string; files: DesignFile[] }>(this.filesOf(record));
+                return {
+                    design: { id, ...(name ? { name } : {}), repository: record.repository, topic, ...(kit ? { kit } : {}), ...(model ? { model } : {}), ...(memory ? { memory } : {}), ...(inputs ? { inputs } : {}), status, createdAt, lastActive, ...(pullRequest ? { pullRequest } : {}), ...(error ? { error } : {}), ...(workSeconds ? { workSeconds } : {}), ...(opened ? { opened } : {}), ...(commands ? { commands } : {}) },
+                    messages: read<DesignMessage[]>(this.messagesOf(record)) ?? [],
+                    ...(files ? { files } : {}),
+                };
+            }),
+        };
+    }
+
+    /**
+     * Sessions of another company, now on `repository` of this one: each once (an id already here is left
+     * as it is), ended, with the copies of their conversation and documents. The link of a pull request
+     * follows the repository (GitHub redirects the old one, it would work all the same).
+     */
+    importFrom(repository: string, value: unknown): { imported: string[]; present: string[] } {
+        if (!REPOSITORY.test(repository)) throw new DesignError('repository must be owner/name', 400);
+        if (!Array.isArray(value) || value.length > 500) throw new DesignError('designs must be a list', 400);
+        const ended: DesignStatus[] = ['finished', 'cancelled', 'failed'];
+        const text = (item: unknown, max: number) => (typeof item === 'string' && item.length <= max ? item : undefined);
+        const items = value.map((entry) => {
+            const item = entry as Partial<DesignTransfer>;
+            const design = (item?.design ?? {}) as Partial<DesignTransfer['design']>;
+            const id = String(design.id ?? '');
+            if (!/^[a-f0-9]{8}$/.test(id)) throw new DesignError('a session without its id', 400);
+            if (!ended.includes(design.status as DesignStatus)) throw new DesignError(`session ${id}: only ended sessions move`, 400);
+            if (design.name !== undefined && !/^[a-z0-9][a-z0-9-]{0,120}$/.test(String(design.name))) throw new DesignError(`session ${id}: a name of lowercase letters, digits and -`, 400);
+            const createdAt = text(design.createdAt, 40);
+            const topic = text(design.topic, 20_000);
+            if (!createdAt || topic === undefined) throw new DesignError(`session ${id}: its topic and when it started`, 400);
+            return { id, design, createdAt, topic, item };
+        });
+        const imported: string[] = [];
+        const present: string[] = [];
+        for (const { id, design, createdAt, topic, item } of items) {
+            if (this.records.has(id)) {
+                present.push(id);
+                continue;
+            }
+            const from = String(design.repository ?? '');
+            const pullRequest = design.pullRequest && typeof design.pullRequest.number === 'number'
+                ? { number: design.pullRequest.number, branch: String(design.pullRequest.branch ?? ''), url: REPOSITORY.test(from) ? String(design.pullRequest.url ?? '').replace(`github.com/${from}/`, `github.com/${repository}/`) : String(design.pullRequest.url ?? '') }
+                : undefined;
+            const record: DesignRecord = {
+                id,
+                ...(design.name ? { name: design.name } : {}),
+                repository,
+                topic,
+                ...(text(design.kit, 60) ? { kit: design.kit } : {}),
+                ...(text(design.model, 200) ? { model: design.model } : {}),
+                ...(Array.isArray(design.memory) ? { memory: design.memory.map(String).slice(0, MEMORY_SPACES) } : {}),
+                ...(Array.isArray(design.inputs) ? { inputs: design.inputs.map(String).slice(0, 20) } : {}),
+                status: design.status as DesignStatus,
+                createdAt,
+                lastActive: text(design.lastActive, 40) ?? createdAt,
+                container: `playbook-design-${this.options.company}-${id}`,
+                password: randomBytes(24).toString('base64url'),
+                ...(design.opened ? { opened: true } : {}),
+                ...(Array.isArray(design.commands) ? { commands: design.commands.filter((command) => typeof command?.at === 'number' && typeof command?.text === 'string') } : {}),
+                ...(pullRequest ? { pullRequest } : {}),
+                ...(text(design.error, 1000) ? { error: design.error } : {}),
+                ...(typeof design.workSeconds === 'number' ? { workSeconds: design.workSeconds } : {}),
+            };
+            mkdirSync(this.messagesOf(record).replace(/\/[^/]+$/, ''), { recursive: true });
+            writeFileSync(this.messagesOf(record), JSON.stringify(Array.isArray(item.messages) ? item.messages : []));
+            if (item.files && Array.isArray(item.files.files)) writeFileSync(this.filesOf(record), JSON.stringify({ at: String(item.files.at ?? createdAt), files: item.files.files }));
+            this.records.set(id, record);
+            imported.push(id);
+        }
+        if (imported.length) this.save();
+        return { imported, present };
+    }
+
+    /** Sessions of a repository moved to another company: off the lists here (archived, kept in the data). */
+    release(repository: string, ids: unknown): string[] {
+        const wanted = new Set(Array.isArray(ids) ? ids.map(String) : []);
+        const released = [...this.records.values()].filter((record) => wanted.has(record.id) && !record.archived && !LIVE.includes(record.status) && record.repository.toLowerCase() === repository.toLowerCase());
+        for (const record of released) record.archived = true;
+        if (released.length) this.save();
+        return released.map((record) => record.id);
     }
 
     /** Pauses the sessions left alone and removes the ones paused for too long. */

@@ -260,6 +260,19 @@ async function images(admin: RunnerAdmin, request: IncomingMessage, response: Se
 async function designs(tenant: Tenant, request: IncomingMessage, response: ServerResponse, [id, what]: string[]) {
     const sessions = tenant.designs;
     const json = async () => JSON.parse((await readBody(request)) || '{}') as Record<string, unknown>;
+    // A repository transferred to another organization: its ended sessions go from one company to the
+    // other through the studio, which holds the token of both.
+    if (id === 'export' && !what && request.method === 'GET') {
+        return send(response, 200, sessions.exportOf(new URL(request.url ?? '', 'http://dispatcher').searchParams.get('repository') ?? ''));
+    }
+    if (id === 'import' && !what && request.method === 'POST') {
+        const body = await json();
+        return send(response, 200, sessions.importFrom(String(body.repository ?? ''), body.designs));
+    }
+    if (id === 'release' && !what && request.method === 'POST') {
+        const body = await json();
+        return send(response, 200, { released: sessions.release(String(body.repository ?? ''), body.ids) });
+    }
     if (!id) {
         if (request.method === 'GET') return send(response, 200, sessions.list());
         if (request.method === 'POST') return send(response, 201, await sessions.start(await json()));
