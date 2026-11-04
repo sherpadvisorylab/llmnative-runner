@@ -180,6 +180,18 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                 });
                 return;
             }
+            // The turns of an issue kept on the machine (what each agent printed), and one of them with its lines:
+            // ?repository=owner/name&issue=12, /turns/<id>.
+            if (request.method === 'GET' && (rest === '/turns' || rest.startsWith('/turns/'))) {
+                if (!tenant.config.studioToken) return send(response, 404, { error: 'studio access not configured' });
+                if (!fromStudio(tenant, request)) return send(response, 401, { error: 'bad token' });
+                const repository = url.searchParams.get('repository') ?? '';
+                const issue = Number(url.searchParams.get('issue'));
+                if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repository) || !Number.isInteger(issue) || issue < 1) return send(response, 400, { error: 'repository and issue are required' });
+                if (rest === '/turns') return send(response, 200, dispatcher.turnsOf(repository, issue));
+                const turn = dispatcher.turnOf(repository, issue, decodeURIComponent(rest.slice('/turns/'.length)));
+                return turn ? send(response, 200, turn) : send(response, 404, { error: 'not found' });
+            }
             // The Actions of sources merged whose push was lost: opened on the request of its studio, never twice.
             if (request.method === 'POST' && rest === '/sources') {
                 if (!tenant.config.studioToken) return send(response, 404, { error: 'studio access not configured' });

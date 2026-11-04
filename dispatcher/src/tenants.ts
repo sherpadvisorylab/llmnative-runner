@@ -6,6 +6,7 @@ import type { RunTurn } from './docker.ts';
 import { createGitHub, type GitHubApi } from './github.ts';
 import { Deliveries } from './webhook.ts';
 import { DesignSessions, type DesignHost, type DesignSlots } from './designs.ts';
+import { fileTurnLogs } from './turnLogs.ts';
 
 // The companies of a runner. Each one is a world of its own inside the dispatcher: its GitHub App,
 // its queue, its failures, its logs, its secrets masked in them. Nothing of a company reaches another.
@@ -101,11 +102,8 @@ export function createTenant(config: CompanyConfig, version: string, deps: Tenan
         // The turns of the machine are for every company: one alone may use them all.
         options: { maxParallel: deps.machine.maxParallel, maxChanges: deps.machine.maxChanges, turnTimeout: deps.machine.turnTimeout, failuresToBlock: deps.machine.failuresToBlock, agentEnv: config.agentEnv },
         log,
-        turnLog: {
-            write(key, text) {
-                appendFileSync(join(logs, `${key.replace(/[^A-Za-z0-9_.-]/g, '-')}.log`), `\n===== ${new Date().toISOString()}\n${mask(text)}\n`);
-            },
-        },
+        // What each turn printed: the log of the issue, and each turn on its own (kept 30 days) for the studio.
+        turnLog: fileTurnLogs(dir, mask),
     });
     const designs = new DesignSessions({
         company: config.id,

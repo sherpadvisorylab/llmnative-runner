@@ -33,9 +33,16 @@ export interface FailureStore {
 
 export type Log = (line: string, details?: Record<string, unknown>) => void;
 
+/** A turn of an issue as it is kept: its agent, when it started, how long, how it ended. */
+export type KeptTurn = { agent: string; startedAt: string; seconds: number; code: number; moved: boolean };
+
 export interface TurnLog {
-    /** Keeps what a turn printed, with its secrets masked. */
-    write(key: string, text: string): void;
+    /** Keeps what a turn printed, with its secrets masked; with the turn, also on its own, to be read again. */
+    write(key: string, text: string, turn?: KeptTurn): void;
+    /** The turns of an issue kept, oldest first, without their lines. */
+    list?(key: string): Array<KeptTurn & { id: string; lineCount: number; cut: boolean }>;
+    /** One turn kept, with its lines. */
+    read?(key: string, id: string): (KeptTurn & { id: string; lineCount: number; cut: boolean; lines: string[] }) | null;
 }
 
 type Issue = {
@@ -158,6 +165,16 @@ export class Dispatcher {
                 // A listener that fails never stops the dispatcher.
             }
         }
+    }
+
+    /** The turns of an issue kept on the machine, oldest first, without their lines. */
+    turnsOf(repository: string, issue: number) {
+        return this.turnLog.list?.(issueKey(repository, issue)) ?? [];
+    }
+
+    /** One turn of an issue kept on the machine, with its lines. */
+    turnOf(repository: string, issue: number, id: string) {
+        return this.turnLog.read?.(issueKey(repository, issue), id) ?? null;
     }
 
     /** What the turn of an issue printed: the running one, or the last one. */
@@ -331,9 +348,13 @@ export class Dispatcher {
                 },
             });
             const seconds = Math.round((this.now() - started) / 1000);
-            this.turnLog.write(key, result.output);
-            const after = await this.github.request<Issue>('GET', `/repos/${repository}/issues/${number}`);
+            const after = await this.github.request<Issue>('GET', `/repos/${repository}/issues/${number}`).catch((error: Error) => {
+                // Its output is kept all the same.
+                this.turnLog.write(key, result.output);
+                throw error;
+            });
             const moved = after.state !== 'open' || workOf(workflow, after.labels).needs !== agent;
+            this.turnLog.write(key, result.output, { agent, startedAt: new Date(started).toISOString(), seconds, code: result.code, moved });
             this.log('turn ended', { issue: key, agent, code: result.code, seconds, moved });
             output.end({ code: result.code, seconds, moved });
             const usage = usageOfOutput(result.output);
