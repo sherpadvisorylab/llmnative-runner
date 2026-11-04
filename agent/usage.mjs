@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // What the turn cost, read from opencode before the container goes: its one session (each turn runs in
 // a new container), exported as JSON, its replies summed. Printed as one line the dispatcher reads:
-//   [playbook-agent] usage {"model":"opencode/deepseek-v4.1-flash","input":…,"output":…,"reasoning":…,"cacheRead":…,"cacheWrite":…,"cost":…,"replies":…}
+//   [playbook-agent] usage {"model":"opencode/deepseek-v4.1-flash","input":…,"output":…,"reasoning":…,"cacheRead":…,"cacheWrite":…,"cost":…,"replies":…,"contextStart":…,"contextEnd":…}
 // Never fails the turn: without a session or an export, it prints nothing.
 import { execFileSync } from 'node:child_process';
 import { closeSync, mkdtempSync, openSync, readFileSync } from 'node:fs';
@@ -25,9 +25,18 @@ export function jsonOf(text) {
 export function usageOf(session) {
     const messages = Array.isArray(session?.messages) ? session.messages : [];
     const usage = { model: '', input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0, replies: 0 };
+    // The context of the turn: what the model read for its first reply (the prompt, the instructions) and
+    // for its last (all the turn read and did on top), each new, written to the cache and read from it.
+    let contextStart = 0;
+    let contextEnd = 0;
     for (const message of messages) {
         const info = message?.info ?? message;
         if (info?.role !== 'assistant') continue;
+        const context = (info.tokens?.input ?? 0) + (info.tokens?.cache?.read ?? 0) + (info.tokens?.cache?.write ?? 0);
+        if (context > 0) {
+            if (!contextStart) contextStart = context;
+            contextEnd = context;
+        }
         usage.replies += 1;
         usage.input += info.tokens?.input ?? 0;
         usage.output += info.tokens?.output ?? 0;
@@ -38,6 +47,7 @@ export function usageOf(session) {
         if (info.modelID) usage.model = info.providerID ? `${info.providerID}/${info.modelID}` : info.modelID;
     }
     usage.cost = Math.round(usage.cost * 1e6) / 1e6;
+    if (contextStart) Object.assign(usage, { contextStart, contextEnd });
     return usage.replies ? usage : null;
 }
 
