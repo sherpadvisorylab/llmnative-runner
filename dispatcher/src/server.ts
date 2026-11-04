@@ -55,7 +55,8 @@ const send = (response: ServerResponse, status: number, body: unknown) => {
 
 /** The company of a path and what is asked of it: `/acme/webhook` → acme, `/webhook`. */
 export function routeOf(path: string, legacy?: string): { company?: string; rest: string } {
-    const match = /^\/([a-z0-9][a-z0-9-]{0,62})(\/[a-z]+(?:\/[a-z0-9]+){0,2})$/.exec(path);
+    // The parts after the first: an id of a session (8 hex) or of a turn (`20261104113533-tester`).
+    const match = /^\/([a-z0-9][a-z0-9-]{0,62})(\/[a-z]+(?:\/[a-z0-9][a-z0-9_.-]{0,100}){0,2})$/.exec(path);
     if (match) return { company: match[1], rest: match[2] };
     return { company: legacy, rest: path };
 }
