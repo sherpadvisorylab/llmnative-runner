@@ -10,13 +10,16 @@ import type { GitHubApi } from './github.ts';
  */
 export type TurnUsage = { model?: string; input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; cost: number; replies: number; seconds?: number; github?: number; contextStart?: number; contextEnd?: number };
 
-const LINE = /^\[playbook-agent\] usage (\{.*\})\s*$/m;
+const LINES = /^\[playbook-agent\] usage (\{.*\})\s*$/gm;
 const MOVE = /<!-- playbook (\{[^\n]*?\}) -->/;
 export const USAGE_MARKER = /<!-- playbook-usage (\{[^\n]*?\}) -->/;
 
-/** The usage the agent printed, if it did. */
+/**
+ * The usage the agent printed, if it did: the last such line, the one the image prints when the turn
+ * ends. Lines like it before come from what the agent read or ran in its turn (a log, another tool).
+ */
 export function usageOfOutput(output: string): TurnUsage | null {
-    const match = LINE.exec(output);
+    const match = [...output.matchAll(LINES)].at(-1);
     if (!match) return null;
     try {
         const usage = JSON.parse(match[1]) as TurnUsage;
