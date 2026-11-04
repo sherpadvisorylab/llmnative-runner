@@ -4,7 +4,8 @@ import type { GitHubApi } from './github.ts';
 // line added to the comment of the turn (the exit of the agent, or its failure), with the numbers in a
 // hidden marker the studio sums. On GitHub the history of an issue stays with it.
 
-export type TurnUsage = { model?: string; input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; cost: number; replies: number; seconds?: number };
+/** `github`: the requests the command of the workflow made to GitHub in the turn. */
+export type TurnUsage = { model?: string; input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; cost: number; replies: number; seconds?: number; github?: number };
 
 const LINE = /^\[playbook-agent\] usage (\{.*\})\s*$/m;
 const MOVE = /<!-- playbook (\{[^\n]*?\}) -->/;
@@ -32,6 +33,7 @@ export function usageNote(usage: TurnUsage): string {
         `${thousands(usage.input + usage.cacheRead + usage.cacheWrite)} in`,
         `${thousands(usage.output + usage.reasoning)} out`,
         `$${usage.cost.toFixed(4)}`,
+        ...(usage.github ? [`${usage.github} GitHub`] : []),
     ];
     return `<!-- playbook-usage ${JSON.stringify(usage)} -->\n<sub>${parts.join(' · ')}</sub>`;
 }

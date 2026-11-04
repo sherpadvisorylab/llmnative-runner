@@ -181,6 +181,13 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                 });
                 return;
             }
+            // What the dispatcher of the company asked of GitHub in the last hours (?hours=24): its studio shows it.
+            if (request.method === 'GET' && rest === '/usage') {
+                if (!tenant.config.studioToken) return send(response, 404, { error: 'studio access not configured' });
+                if (!fromStudio(tenant, request)) return send(response, 401, { error: 'bad token' });
+                const hours = Math.min(Math.max(Number(url.searchParams.get('hours')) || 24, 1), 24 * 7);
+                return send(response, 200, tenant.usage.summary(hours));
+            }
             // The turns of an issue kept on the machine (what each agent printed), and one of them with its lines:
             // ?repository=owner/name&issue=12, /turns/<id>.
             if (request.method === 'GET' && (rest === '/turns' || rest.startsWith('/turns/'))) {

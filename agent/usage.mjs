@@ -10,6 +10,11 @@ import { join } from 'node:path';
 
 const opencode = (args) => execFileSync('opencode', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 60_000, maxBuffer: 256 * 1024 * 1024 });
 
+/** The requests the command of the workflow made to GitHub in this turn: one number per run, summed. */
+export function githubRequestsOf(text) {
+    return String(text ?? '').split(/\r?\n/).reduce((total, line) => total + (Number.parseInt(line, 10) || 0), 0);
+}
+
 /** The JSON a command printed, from its first bracket (a line of its own may come before it). */
 export function jsonOf(text) {
     const start = text.search(/[[{]/);
@@ -56,7 +61,14 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop()
         const sessions = jsonOf(opencode(['session', 'list', '--max-count', '1', '--format', 'json']));
         const id = (Array.isArray(sessions) ? sessions[0] : sessions)?.id;
         const usage = id ? usageOf(jsonOf(exported(id))) : null;
-        if (usage) console.log(`[playbook-agent] usage ${JSON.stringify(usage)}`);
+        // The requests of the command of the workflow (.playbook/playbook.mjs), from the repository of the turn.
+        let github = 0;
+        try {
+            github = githubRequestsOf(readFileSync('.playbook/out/github-requests.log', 'utf8'));
+        } catch {
+            // None made, or another command.
+        }
+        if (usage) console.log(`[playbook-agent] usage ${JSON.stringify(github ? { ...usage, github } : usage)}`);
     } catch {
         // No usage: the turn is what counts.
     }

@@ -7,6 +7,7 @@ import { createGitHub, type GitHubApi } from './github.ts';
 import { Deliveries } from './webhook.ts';
 import { DesignSessions, type DesignHost, type DesignSlots } from './designs.ts';
 import { fileTurnLogs } from './turnLogs.ts';
+import { countedGitHub, githubUsageCounter, type GitHubUsageCounter } from './githubUsage.ts';
 
 // The companies of a runner. Each one is a world of its own inside the dispatcher: its GitHub App,
 // its queue, its failures, its logs, its secrets masked in them. Nothing of a company reaches another.
@@ -23,6 +24,8 @@ export interface Tenant {
     log: Log;
     /** When its .env was last read, to reload it when it changes. */
     version: string;
+    /** What its dispatcher asked of GitHub, counted (the studio reads it). */
+    usage: GitHubUsageCounter;
 }
 
 /** The secrets of a company never reach a log: the values of its turns, its webhook secret, its studio token, installation tokens. */
@@ -91,7 +94,9 @@ export function createTenant(config: CompanyConfig, version: string, deps: Tenan
     mkdirSync(logs, { recursive: true });
     const mask = masker(config);
     const log: Log = (line, details) => console.log(mask(JSON.stringify({ at: new Date().toISOString(), company: config.id, msg: line, ...details })));
-    const github = deps.github?.(config) ?? createGitHub({ appId: config.appId, privateKey: config.privateKey, installationId: config.installationId });
+    // Its requests to GitHub counted by the hour, repository and item (the studio shows them in Statistics).
+    const usage = githubUsageCounter(join(dir, 'github-usage.json'));
+    const github = countedGitHub(deps.github?.(config) ?? createGitHub({ appId: config.appId, privateKey: config.privateKey, installationId: config.installationId }), usage);
     const dispatcher = new Dispatcher({
         mask,
         github,
@@ -118,7 +123,7 @@ export function createTenant(config: CompanyConfig, version: string, deps: Tenan
         kits: deps.designKits ?? {},
         fetch: deps.fetch,
     });
-    return { id: config.id, config, github, dispatcher, designs, deliveries: new Deliveries(), mask, log, version };
+    return { id: config.id, config, github, dispatcher, designs, deliveries: new Deliveries(), mask, log, version, usage };
 }
 
 /**
