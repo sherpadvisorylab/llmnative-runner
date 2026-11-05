@@ -12,7 +12,9 @@ const AUTHORIZE = /https:\/\/claude\.(?:com|ai)\/cai\/oauth\/authorize\?[^\s\u00
 /** The long-lived token it prints once the code is accepted. */
 export const CLAUDE_TOKEN = /sk-ant-oat01-[A-Za-z0-9_-]{20,}/;
 /** What the terminal adds around the text: colours, cursor moves, hyperlinks. */
-const ESCAPES = /\u001b\][^\u0007]*\u0007|\u001b\]8;[^\u001b]*\u001b\\|\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b[=>]|\r/g;
+const ESCAPES = /\u001b\][^\u0007]*\u0007|\u001b\]8;[^\u001b]*\u001b\\|\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b[()][0-9A-Za-z]|\u001b[=>]|\r/g;
+/** How long after the code its Enter goes: in one write with a long code, the CLI takes it as pasted text, not as Enter. */
+const ENTER_AFTER_MS = 500;
 
 export const LOGIN_TIMEOUT_MS = 10 * 60_000;
 const LINK_WAIT_MS = 90_000;
@@ -25,7 +27,9 @@ export type LoginError = 'busy' | 'no-link' | 'no-session' | 'refused' | 'no-tok
 
 /** The last words the CLI printed, as a person reads them: escapes and spinners left out, tokens masked. */
 export function cliSaid(output: string): string {
-    return output.replace(ESCAPES, ' ').replace(/sk-ant-[A-Za-z0-9_-]{8,}/g, 'sk-ant-***').replace(/[^\x20-\x7e]+/g, ' ').replace(/\s+/g, ' ').trim().slice(-400);
+    return output.replace(ESCAPES, ' ').replace(/sk-ant-[A-Za-z0-9_-]{8,}/g, 'sk-ant-***').replace(/[^\x20-\x7e]+/g, ' ')
+        // The code as the CLI echoes it, masked: no wall of stars.
+        .replace(/\*{4,}\S*/g, '***').replace(/\s+/g, ' ').trim().slice(-400);
 }
 
 type Session = { child: ChildProcess; output: string; done: boolean; timer: NodeJS.Timeout };
@@ -155,7 +159,9 @@ export class ClaudeAccounts {
         if (!session || session.done) return { error: 'no-session' };
         if (!ACCOUNT_ID.test(id)) return { error: 'refused' };
         const before = session.output.length;
-        session.child.stdin?.write(`${code.trim()}\r`);
+        session.child.stdin?.write(code.trim());
+        await new Promise((resolve) => setTimeout(resolve, ENTER_AFTER_MS));
+        session.child.stdin?.write('\r');
         // The terminal is 1000 columns wide: the token is on one line, ended by a space or its line.
         const token = await waitFor(session, (text) => CLAUDE_TOKEN.exec(text.slice(before).replace(ESCAPES, ''))?.[0], TOKEN_WAIT_MS);
         const said = cliSaid(session.output.slice(before));
