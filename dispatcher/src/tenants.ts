@@ -8,6 +8,7 @@ import { Deliveries } from './webhook.ts';
 import { DesignSessions, type DesignHost, type DesignSlots } from './designs.ts';
 import { fileTurnLogs } from './turnLogs.ts';
 import { countedGitHub, githubUsageCounter, type GitHubUsageCounter } from './githubUsage.ts';
+import { ClaudeAccounts } from './claudeAccounts.ts';
 
 // The companies of a runner. Each one is a world of its own inside the dispatcher: its GitHub App,
 // its queue, its failures, its logs, its secrets masked in them. Nothing of a company reaches another.
@@ -17,6 +18,8 @@ export interface Tenant {
     config: CompanyConfig;
     github: GitHubApi;
     dispatcher: Dispatcher;
+    /** Its subscriptions of Claude: their tokens kept on this server only (§8.5). */
+    claude: ClaudeAccounts;
     /** Its design sessions. */
     designs: DesignSessions;
     deliveries: Deliveries;
@@ -31,7 +34,8 @@ export interface Tenant {
 /** The secrets of a company never reach a log: the values of its turns, its webhook secret, its studio token, installation tokens. */
 export function masker(config: CompanyConfig) {
     const secrets = [...Object.values(config.agentEnv), config.webhookSecret ?? '', config.studioToken ?? ''].filter((value) => value.length >= 8);
-    return (text: string) => secrets.reduce((all, secret) => all.split(secret).join('***'), text).replace(/gh[suo]_[A-Za-z0-9]{20,}/g, '***');
+    // The tokens of the subscriptions of Claude come after the start: masked by their shape.
+    return (text: string) => secrets.reduce((all, secret) => all.split(secret).join('***'), text).replace(/gh[suo]_[A-Za-z0-9]{20,}/g, '***').replace(/sk-ant-[A-Za-z0-9_-]{20,}/g, '***');
 }
 
 /** The failures in a row of each issue of a company, in a JSON file that survives a restart. */
@@ -86,6 +90,8 @@ export interface TenantDeps {
     github?: (config: CompanyConfig) => GitHubApi;
     /** For tests; by default the real fetch. */
     fetch?: typeof fetch;
+    /** For tests: the subscriptions of Claude of a company; by default in its folder, signed in through the image of the agents. */
+    claude?: (config: CompanyConfig, dir: string) => ClaudeAccounts;
 }
 
 export function createTenant(config: CompanyConfig, version: string, deps: TenantDeps): Tenant {
@@ -93,6 +99,7 @@ export function createTenant(config: CompanyConfig, version: string, deps: Tenan
     const logs = join(dir, 'logs');
     mkdirSync(logs, { recursive: true });
     const mask = masker(config);
+    const claude = deps.claude?.(config, dir) ?? ClaudeAccounts.docker(join(dir, 'claude-accounts.json'), deps.machine.image);
     const log: Log = (line, details) => console.log(mask(JSON.stringify({ at: new Date().toISOString(), company: config.id, msg: line, ...details })));
     // Its requests to GitHub counted by the hour, repository and item (the studio shows them in Statistics).
     const usage = githubUsageCounter(join(dir, 'github-usage.json'));
@@ -105,7 +112,7 @@ export function createTenant(config: CompanyConfig, version: string, deps: Tenan
         sizes: fileSizes(join(dir, 'sizes.json')),
         stats: deps.stats,
         // The turns of the machine are for every company: one alone may use them all.
-        options: { maxParallel: deps.machine.maxParallel, maxChanges: deps.machine.maxChanges, turnTimeout: deps.machine.turnTimeout, failuresToBlock: deps.machine.failuresToBlock, agentEnv: config.agentEnv, providerOrder: config.providerOrder, accounts: config.accounts },
+        options: { maxParallel: deps.machine.maxParallel, maxChanges: deps.machine.maxChanges, turnTimeout: deps.machine.turnTimeout, failuresToBlock: deps.machine.failuresToBlock, agentEnv: config.agentEnv, providerOrder: config.providerOrder, accounts: config.accounts, claudeTokens: () => claude.tokens() },
         log,
         // What each turn printed: the log of the issue, and each turn on its own (kept 30 days) for the studio.
         turnLog: fileTurnLogs(dir, mask),
@@ -123,7 +130,7 @@ export function createTenant(config: CompanyConfig, version: string, deps: Tenan
         kits: deps.designKits ?? {},
         fetch: deps.fetch,
     });
-    return { id: config.id, config, github, dispatcher, designs, deliveries: new Deliveries(), mask, log, version, usage };
+    return { id: config.id, config, github, dispatcher, claude, designs, deliveries: new Deliveries(), mask, log, version, usage };
 }
 
 /**

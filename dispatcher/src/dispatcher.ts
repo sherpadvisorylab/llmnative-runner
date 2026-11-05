@@ -25,6 +25,8 @@ export interface DispatcherOptions {
     providerOrder?: string[];
     /** The accounts of each provider in order, by id and label (PLAYBOOK_ACCOUNTS); their keys are in `agentEnv`. */
     accounts?: Record<string, Array<{ id: string; label?: string }>>;
+    /** The tokens of the subscriptions of Claude kept on this server, by id (§8.5): they come before one in the .env. */
+    claudeTokens?: () => Record<string, string>;
     /** How long the workflow of a repository is trusted before it is read again, in ms. */
     workflowTtl?: number;
     /** CRs of a repository with their pull request open at once (MAX_CHANGES): 1, one change in flight. */
@@ -352,8 +354,9 @@ export class Dispatcher {
             const settings = workflow.agents[agent];
             // Where it runs (§8.6): each model of the agent on each provider of the organization that serves it,
             // in its order, skipping those out of credit. A package without models: the model of its opencode agent.
+            const keys = this.keys();
             const tries: Array<ModelCandidate | undefined> = settings.models
-                ? candidates(settings.models, connectedAccounts(this.options.agentEnv, this.options.accounts), this.options.providerOrder, (key) => this.isExhausted(key))
+                ? candidates(settings.models, connectedAccounts(keys.env, keys.accounts), this.options.providerOrder, (key) => this.isExhausted(key))
                 : [undefined];
             if (!tries.length) {
                 const exhausted = [...this.exhausted.keys()].filter((key) => this.isExhausted(key)).map((key) => key.split('#')[0]).filter((provider, at, all) => all.indexOf(provider) === at);
@@ -365,7 +368,7 @@ export class Dispatcher {
                 return;
             }
             for (const [index, chosen] of tries.entries()) {
-                const attempt = await this.attempt(workflow, repository, number, agent, chosen);
+                const attempt = await this.attempt(workflow, repository, number, agent, chosen, keys.env);
                 const until = chosen && !attempt.moved ? outOfCredit(attempt.output, this.now()) : undefined;
                 if (chosen && until !== undefined) {
                     // Out of credit: this account skipped until it may have some again, the turn goes on with the next
@@ -390,8 +393,27 @@ export class Dispatcher {
         }
     }
 
+    /**
+     * The keys of the turns and the accounts of each provider: those of the .env, with the subscriptions of
+     * Claude kept on this server in their place, in the order of the organization (those it does not name yet after).
+     */
+    private keys(): { env: Record<string, string>; accounts: Record<string, Array<{ id: string; label?: string }>> } {
+        const tokens = this.options.claudeTokens?.() ?? {};
+        const env = { ...this.options.agentEnv };
+        const accounts = { ...this.options.accounts };
+        if (!Object.keys(tokens).length) return { env, accounts };
+        const listed = (accounts['claude-code'] ?? []).filter((account) => tokens[account.id]);
+        const ordered = [...listed, ...Object.keys(tokens).filter((id) => !listed.some((account) => account.id === id)).map((id) => ({ id }))];
+        for (const name of Object.keys(env).filter((name) => /^CLAUDE_CODE_OAUTH_TOKEN(__\d+)?$/.test(name))) delete env[name];
+        ordered.forEach((account, index) => {
+            env[index ? `CLAUDE_CODE_OAUTH_TOKEN__${index + 1}` : 'CLAUDE_CODE_OAUTH_TOKEN'] = tokens[account.id];
+        });
+        accounts['claude-code'] = ordered;
+        return { env, accounts };
+    }
+
     /** One container of a turn, on `chosen` (none: the model of its opencode agent): what it printed, whether the issue moved. */
-    private async attempt(workflow: Workflow, repository: string, number: number, agent: string, chosen: ModelCandidate | undefined) {
+    private async attempt(workflow: Workflow, repository: string, number: number, agent: string, chosen: ModelCandidate | undefined, keys: Record<string, string> = this.options.agentEnv) {
         const key = issueKey(repository, number);
         const settings = workflow.agents[agent];
         const token = await this.github.turnToken(repository, settings.permissions);
@@ -407,7 +429,7 @@ export class Dispatcher {
             timeout: this.options.turnTimeout,
             env: {
                 // The keys of the organization; on a try, only those of its account for its provider.
-                ...(chosen ? candidateEnv(chosen, settings.effort, this.options.agentEnv) : Object.fromEntries(Object.entries(this.options.agentEnv).filter(([name]) => !/__\d+$/.test(name)))),
+                ...(chosen ? candidateEnv(chosen, settings.effort, keys) : Object.fromEntries(Object.entries(keys).filter(([name]) => !/__\d+$/.test(name)))),
                 PLAYBOOK_AGENT: settings.opencodeAgent,
                 PLAYBOOK_ISSUE: String(number),
                 PLAYBOOK_TIMEOUT: String(this.options.turnTimeout),

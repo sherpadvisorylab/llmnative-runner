@@ -210,6 +210,28 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                 if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repository) || !sources.length) return send(response, 400, { error: 'repository and sources are required' });
                 return send(response, 200, { opened: await dispatcher.openSources(repository, sources) });
             }
+            // The subscriptions of Claude of the organization (§8.5): the sign-in started by its studio, the CLI
+            // here, the token kept here. The answers never hold a token.
+            if (rest === '/claude' || rest.startsWith('/claude/')) {
+                if (!tenant.config.studioToken) return send(response, 404, { error: 'studio access not configured' });
+                if (!fromStudio(tenant, request)) return send(response, 401, { error: 'bad token' });
+                const body = request.method === 'GET' || request.method === 'DELETE' ? {} : JSON.parse((await readBody(request)) || '{}') as Record<string, unknown>;
+                if (request.method === 'GET' && rest === '/claude') return send(response, 200, { accounts: tenant.claude.list() });
+                if (request.method === 'POST' && rest === '/claude/login') {
+                    const started = await tenant.claude.start();
+                    tenant.log('claude sign-in started', { ok: 'url' in started });
+                    return send(response, 'url' in started ? 200 : 409, started);
+                }
+                if (request.method === 'POST' && rest === '/claude/login/code') {
+                    const done = await tenant.claude.code(String(body.id ?? ''), String(body.code ?? '').slice(0, 500));
+                    tenant.log('claude sign-in ended', { connected: 'connected' in done });
+                    return send(response, 'connected' in done ? 200 : 409, done);
+                }
+                const account = rest.startsWith('/claude/accounts/') ? decodeURIComponent(rest.slice('/claude/accounts/'.length)) : '';
+                if (account && request.method === 'PUT') return tenant.claude.set(account, String(body.token ?? '')) ? send(response, 200, { connected: true }) : send(response, 400, { error: 'invalid' });
+                if (account && request.method === 'DELETE') return send(response, 200, { removed: tenant.claude.remove(account) });
+                return send(response, 404, { error: 'not found' });
+            }
             if (rest === '/designs' || rest.startsWith('/designs/')) {
                 if (!tenant.config.studioToken) return send(response, 404, { error: 'studio access not configured' });
                 if (!fromStudio(tenant, request)) return send(response, 401, { error: 'bad token' });

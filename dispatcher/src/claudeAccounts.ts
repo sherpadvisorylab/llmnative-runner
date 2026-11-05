@@ -1,0 +1,160 @@
+import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+
+// The subscriptions of Claude of an organization (docs/playbook-model.md §8.5): their tokens live on this
+// server only, the one that uses them. The studio starts the sign-in and passes the code of the person; the
+// CLI itself, `claude setup-token`, runs here in the image of the agents, prints the page of Anthropic and the
+// token, and the token is kept in a file of the organization the studio never reads. The studio knows each
+// subscription by its id, name and date, and sends their order (PLAYBOOK_ACCOUNTS).
+
+/** The link of Anthropic `claude setup-token` prints, in its OSC 8 hyperlink or as text. */
+const AUTHORIZE = /https:\/\/claude\.(?:com|ai)\/cai\/oauth\/authorize\?[^\s\u0007\u001b\]"']+/;
+/** The long-lived token it prints once the code is accepted. */
+export const CLAUDE_TOKEN = /sk-ant-oat01-[A-Za-z0-9_-]{20,}/;
+/** What the terminal adds around the text: colours, cursor moves, hyperlinks. */
+const ESCAPES = /\u001b\][^\u0007]*\u0007|\u001b\]8;[^\u001b]*\u001b\\|\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b[=>]|\r/g;
+
+export const LOGIN_TIMEOUT_MS = 10 * 60_000;
+const LINK_WAIT_MS = 90_000;
+const TOKEN_WAIT_MS = 60_000;
+/** The id of a subscription, given by the studio. */
+export const ACCOUNT_ID = /^[a-z0-9]{1,16}$/;
+
+export type LoginError = 'busy' | 'no-link' | 'no-session' | 'refused';
+
+type Session = { child: ChildProcess; output: string; done: boolean; timer: NodeJS.Timeout };
+type Saved = Record<string, { token: string; at: string }>;
+
+/** The arguments of `docker` that run `claude setup-token` in a pseudo terminal, wide enough for its token on one line. */
+export const setupTokenArgs = (image: string) =>
+    ['run', '--rm', '-i', '-e', 'COLUMNS=1000', '-e', 'LINES=50', '--entrypoint', 'script', image, '-qfec', 'stty cols 1000 rows 50 2>/dev/null; claude setup-token', '/dev/null'];
+
+/** Waits until `test` finds something in the output of the session, or `ms` pass, or the CLI exits. */
+function waitFor(session: Session, test: (text: string) => string | undefined, ms: number): Promise<string | undefined> {
+    return new Promise((resolve) => {
+        const found = test(session.output);
+        if (found || session.done) return resolve(found);
+        const check = () => {
+            const value = test(session.output);
+            if (value || session.done) finish(value);
+        };
+        const finish = (value: string | undefined) => {
+            clearTimeout(timer);
+            session.child.stdout?.off('data', check);
+            session.child.off('exit', onExit);
+            resolve(value);
+        };
+        const onExit = () => finish(test(session.output));
+        const timer = setTimeout(() => finish(undefined), ms);
+        session.child.stdout?.on('data', check);
+        session.child.on('exit', onExit);
+    });
+}
+
+export class ClaudeAccounts {
+    private session?: Session;
+
+    /**
+     * `file`: where the tokens of the organization are kept (readable by the dispatcher only). `open`:
+     * `claude setup-token` in a pseudo terminal; by default in a container of the image of the agents.
+     */
+    private readonly file: string;
+    private readonly open: () => ChildProcess;
+    private readonly now: () => Date;
+
+    constructor(file: string, open: () => ChildProcess, now = () => new Date()) {
+        this.file = file;
+        this.open = open;
+        this.now = now;
+    }
+
+    static docker(file: string, image: string, command = 'docker') {
+        return new ClaudeAccounts(file, () => spawn(command, setupTokenArgs(image), { stdio: ['pipe', 'pipe', 'pipe'] }));
+    }
+
+    private read(): Saved {
+        try {
+            return existsSync(this.file) ? JSON.parse(readFileSync(this.file, 'utf8')) as Saved : {};
+        } catch {
+            return {};
+        }
+    }
+
+    private write(saved: Saved) {
+        writeFileSync(`${this.file}.tmp`, JSON.stringify(saved, null, 2), { mode: 0o600 });
+        renameSync(`${this.file}.tmp`, this.file);
+    }
+
+    /** The subscriptions kept here: their id and when; never their token. */
+    list(): Array<{ id: string; at: string }> {
+        return Object.entries(this.read()).map(([id, { at }]) => ({ id, at }));
+    }
+
+    /** The token of each subscription, by id: for the turns, and to mask. */
+    tokens(): Record<string, string> {
+        return Object.fromEntries(Object.entries(this.read()).map(([id, { token }]) => [id, token]));
+    }
+
+    /** A token given by the person (run elsewhere): kept under its id. False when it is not one. */
+    set(id: string, token: string): boolean {
+        if (!ACCOUNT_ID.test(id) || !new RegExp(`^${CLAUDE_TOKEN.source}$`).test(token.trim())) return false;
+        this.write({ ...this.read(), [id]: { token: token.trim(), at: this.now().toISOString() } });
+        return true;
+    }
+
+    remove(id: string): boolean {
+        const saved = this.read();
+        if (!saved[id]) return false;
+        delete saved[id];
+        this.write(saved);
+        return true;
+    }
+
+    private close() {
+        const session = this.session;
+        if (!session) return;
+        this.session = undefined;
+        clearTimeout(session.timer);
+        if (!session.done) session.child.kill();
+    }
+
+    /** Starts the sign-in: the link of Anthropic the CLI printed, or why not. One at a time; a new one ends the last. */
+    async start(): Promise<{ url: string } | { error: LoginError }> {
+        this.close();
+        const child = this.open();
+        const session: Session = { child, output: '', done: false, timer: setTimeout(() => this.close(), LOGIN_TIMEOUT_MS) };
+        this.session = session;
+        const keep = (chunk: Buffer) => {
+            session.output = (session.output + chunk.toString('utf8')).slice(-200_000);
+        };
+        child.stdout?.on('data', keep);
+        child.stderr?.on('data', keep);
+        child.on('exit', () => {
+            session.done = true;
+        });
+        child.on('error', () => {
+            session.done = true;
+        });
+        const url = await waitFor(session, (text) => AUTHORIZE.exec(text)?.[0], LINK_WAIT_MS);
+        if (!url) {
+            this.close();
+            return { error: 'no-link' };
+        }
+        return { url };
+    }
+
+    /** The code the person got from Anthropic: written to the CLI, the token it prints kept as `id`; why not, else. */
+    async code(id: string, code: string): Promise<{ connected: true } | { error: LoginError }> {
+        const session = this.session;
+        if (!session || session.done) return { error: 'no-session' };
+        if (!ACCOUNT_ID.test(id)) return { error: 'refused' };
+        const before = session.output.length;
+        session.child.stdin?.write(`${code.trim()}\r`);
+        // The terminal is 1000 columns wide: the token is on one line, ended by a space or its line.
+        const token = await waitFor(session, (text) => CLAUDE_TOKEN.exec(text.slice(before).replace(ESCAPES, ''))?.[0], TOKEN_WAIT_MS);
+        this.close();
+        if (!token) return { error: 'refused' };
+        this.set(id, token);
+        return { connected: true };
+    }
+}
