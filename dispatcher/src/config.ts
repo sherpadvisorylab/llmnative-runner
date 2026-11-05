@@ -9,6 +9,8 @@ import { readFileSync } from 'node:fs';
 export const DEFAULT_AGENT_ENV = [
     'OPENCODE_API_KEY',
     'OPENCODE_GO_API_KEY',
+    // The token of the subscription of Claude (claude setup-token), for the agents run by Claude Code.
+    'CLAUDE_CODE_OAUTH_TOKEN',
     'ANTHROPIC_API_KEY',
     'OPENAI_API_KEY',
     'GEMINI_API_KEY',

@@ -345,6 +345,8 @@ export class Dispatcher {
                     PLAYBOOK_BRANCH: workflow.workBranch,
                     GITHUB_REPOSITORY: repository,
                     GITHUB_TOKEN: token,
+                    // Run by Claude Code (with the subscription of the organization): the engine and how much it reasons.
+                    ...(settings.engine === 'claude-code' ? { PLAYBOOK_ENGINE: 'claude-code', ...(settings.effort ? { PLAYBOOK_EFFORT: settings.effort } : {}) } : {}),
                 },
             });
             const seconds = Math.round((this.now() - started) / 1000);

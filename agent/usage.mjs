@@ -52,6 +52,42 @@ export function usageOf(session) {
 }
 
 /**
+ * The usage of a turn run by Claude Code, from its stream-json events (claude-stream.mjs keeps them):
+ * the result says the cost, the steps and the tokens; the context is what the model read for its first
+ * reply and for its last, as for opencode. Null without a result.
+ */
+export function claudeUsageOf(text) {
+    const events = String(text ?? '').split(/\r?\n/).flatMap((line) => {
+        try {
+            return line.trim() ? [JSON.parse(line)] : [];
+        } catch {
+            return [];
+        }
+    });
+    const result = events.filter((event) => event.type === 'result').at(-1);
+    if (!result) return null;
+    const init = events.find((event) => event.type === 'system' && event.subtype === 'init');
+    const contexts = events
+        .filter((event) => event.type === 'assistant' && event.message?.usage)
+        .map(({ message: { usage } }) => (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0))
+        .filter((context) => context > 0);
+    const usage = result.usage ?? {};
+    const model = Object.keys(result.modelUsage ?? {})[0] ?? init?.model ?? '';
+    return {
+        model: model ? `claude-code/${model}` : 'claude-code',
+        input: usage.input_tokens ?? 0,
+        output: usage.output_tokens ?? 0,
+        reasoning: 0,
+        cacheRead: usage.cache_read_input_tokens ?? 0,
+        cacheWrite: usage.cache_creation_input_tokens ?? 0,
+        // What the turn would cost at the prices of the API: with the subscription it is not billed.
+        cost: Math.round((result.total_cost_usd ?? 0) * 1e6) / 1e6,
+        replies: result.num_turns ?? 0,
+        ...(contexts.length ? { contextStart: contexts[0], contextEnd: contexts.at(-1) } : {}),
+    };
+}
+
+/**
  * The export of a session, through a file: written to a pipe, opencode stops at 64 KB and the JSON of a
  * long turn comes cut (only short sessions read whole).
  */
@@ -68,9 +104,15 @@ function exported(id) {
 
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop())) {
     try {
-        const sessions = jsonOf(opencode(['session', 'list', '--max-count', '1', '--format', 'json']));
-        const id = (Array.isArray(sessions) ? sessions[0] : sessions)?.id;
-        const usage = id ? usageOf(jsonOf(exported(id))) : null;
+        // Run by Claude Code: its events; else the last session of opencode.
+        let usage = null;
+        if (process.env.PLAYBOOK_ENGINE === 'claude-code') {
+            usage = claudeUsageOf(readFileSync(process.env.CLAUDE_STREAM_FILE || '/tmp/claude-turn.jsonl', 'utf8'));
+        } else {
+            const sessions = jsonOf(opencode(['session', 'list', '--max-count', '1', '--format', 'json']));
+            const id = (Array.isArray(sessions) ? sessions[0] : sessions)?.id;
+            usage = id ? usageOf(jsonOf(exported(id))) : null;
+        }
         // The requests of the command of the workflow (.playbook/playbook.mjs), from the repository of the turn.
         let github = 0;
         try {

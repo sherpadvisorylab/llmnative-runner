@@ -5,11 +5,13 @@ FROM node:24-bookworm-slim
 
 # opencode at a fixed version: a new one is adopted on purpose, by changing it here.
 ARG OPENCODE_VERSION=1.19.3
+# Claude Code, for the agents an organization runs with its subscription of Claude (§8.5).
+ARG CLAUDE_CODE_VERSION=2.1.318
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates tini \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g "opencode-ai@${OPENCODE_VERSION}" \
+    && npm install -g "opencode-ai@${OPENCODE_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force
 
 # Not root: the agent works in /work with its own user.
@@ -17,12 +19,13 @@ RUN useradd --create-home --uid 10001 agent && mkdir -p /work && chown agent:age
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/playbook-agent
 RUN mkdir -p /usr/local/lib/playbook && chmod 0755 /usr/local/lib/playbook
 COPY --chmod=0644 usage.mjs /usr/local/lib/playbook/usage.mjs
+COPY --chmod=0644 claude-stream.mjs /usr/local/lib/playbook/claude-stream.mjs
 COPY --chown=agent:agent opencode.json /home/agent/.config/opencode/opencode.json
 
 USER agent
 WORKDIR /work
 ENV HOME=/home/agent
 LABEL org.opencontainers.image.title="playbook-agent" \
-      org.opencontainers.image.description="A Playbook agent run by opencode, one container per turn"
+      org.opencontainers.image.description="A Playbook agent run by opencode or Claude Code, one container per turn"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/playbook-agent"]
