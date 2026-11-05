@@ -20,7 +20,13 @@ const TOKEN_WAIT_MS = 60_000;
 /** The id of a subscription, given by the studio. */
 export const ACCOUNT_ID = /^[a-z0-9]{1,16}$/;
 
-export type LoginError = 'busy' | 'no-link' | 'no-session' | 'refused';
+/** `refused`: Anthropic said no; `no-token`: the CLI printed no token in time (what it printed is the detail). */
+export type LoginError = 'busy' | 'no-link' | 'no-session' | 'refused' | 'no-token';
+
+/** The last words the CLI printed, as a person reads them: escapes and spinners left out, tokens masked. */
+export function cliSaid(output: string): string {
+    return output.replace(ESCAPES, ' ').replace(/sk-ant-[A-Za-z0-9_-]{8,}/g, 'sk-ant-***').replace(/[^\x20-\x7e]+/g, ' ').replace(/\s+/g, ' ').trim().slice(-400);
+}
 
 type Session = { child: ChildProcess; output: string; done: boolean; timer: NodeJS.Timeout };
 type Saved = Record<string, { token: string; at: string }>;
@@ -144,7 +150,7 @@ export class ClaudeAccounts {
     }
 
     /** The code the person got from Anthropic: written to the CLI, the token it prints kept as `id`; why not, else. */
-    async code(id: string, code: string): Promise<{ connected: true } | { error: LoginError }> {
+    async code(id: string, code: string): Promise<{ connected: true } | { error: LoginError; detail?: string }> {
         const session = this.session;
         if (!session || session.done) return { error: 'no-session' };
         if (!ACCOUNT_ID.test(id)) return { error: 'refused' };
@@ -152,8 +158,10 @@ export class ClaudeAccounts {
         session.child.stdin?.write(`${code.trim()}\r`);
         // The terminal is 1000 columns wide: the token is on one line, ended by a space or its line.
         const token = await waitFor(session, (text) => CLAUDE_TOKEN.exec(text.slice(before).replace(ESCAPES, ''))?.[0], TOKEN_WAIT_MS);
+        const said = cliSaid(session.output.slice(before));
         this.close();
-        if (!token) return { error: 'refused' };
+        // What the CLI answered, for the person: Anthropic refusing the code, or something else.
+        if (!token) return { error: /oauth error|wasn.t accepted|invalid|expired/i.test(said) ? 'refused' : 'no-token', ...(said ? { detail: said } : {}) };
         this.set(id, token);
         return { connected: true };
     }

@@ -224,7 +224,7 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                 }
                 if (request.method === 'POST' && rest === '/claude/login/code') {
                     const done = await tenant.claude.code(String(body.id ?? ''), String(body.code ?? '').slice(0, 500));
-                    tenant.log('claude sign-in ended', { connected: 'connected' in done });
+                    tenant.log('claude sign-in ended', { connected: 'connected' in done, ...('error' in done ? { error: done.error, said: done.detail } : {}) });
                     return send(response, 'connected' in done ? 200 : 409, done);
                 }
                 const account = rest.startsWith('/claude/accounts/') ? decodeURIComponent(rest.slice('/claude/accounts/'.length)) : '';
