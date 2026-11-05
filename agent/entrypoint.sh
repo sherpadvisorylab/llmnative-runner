@@ -3,7 +3,8 @@
 #   PLAYBOOK_AGENT    the agent of the workflow package (.opencode/agents/<name>.md)    required
 #   PLAYBOOK_PROMPT   what the agent is asked; default: work on PLAYBOOK_ISSUE
 #   PLAYBOOK_ISSUE    the issue number of the turn
-#   PLAYBOOK_MODEL    provider/model for opencode; default: the one of the agent
+#   PLAYBOOK_MODEL    provider/model for opencode, the id of the model for Claude Code; default: the one of the agent
+#   PLAYBOOK_VARIANT  the variant of the model for opencode (how much it reasons: low, high, max…)
 #   PLAYBOOK_TIMEOUT  seconds before the turn is stopped (default 3600)
 #   PLAYBOOK_ENGINE   claude-code to run the agent with Claude Code (.claude/agents/<name>.md and the
 #                     subscription of CLAUDE_CODE_OAUTH_TOKEN); default opencode
@@ -72,7 +73,7 @@ if [[ "${PLAYBOOK_ENGINE:-opencode}" == "claude-code" ]]; then
     args=(-p --agent "$agent" --output-format stream-json --verbose --dangerously-skip-permissions)
     [[ -n "${PLAYBOOK_EFFORT:-}" ]] && args+=(--effort "$PLAYBOOK_EFFORT")
     [[ -n "${PLAYBOOK_MODEL:-}" ]] && args+=(--model "$PLAYBOOK_MODEL")
-    say "agent ${agent}${PLAYBOOK_ISSUE:+ on issue #${PLAYBOOK_ISSUE}} with Claude Code${PLAYBOOK_EFFORT:+ (effort ${PLAYBOOK_EFFORT})}"
+    say "agent ${agent}${PLAYBOOK_ISSUE:+ on issue #${PLAYBOOK_ISSUE}} with Claude Code${PLAYBOOK_MODEL:+ and ${PLAYBOOK_MODEL}}${PLAYBOOK_EFFORT:+ (effort ${PLAYBOOK_EFFORT})}"
     set +e
     timeout --signal=TERM --kill-after=30 "${PLAYBOOK_TIMEOUT:-3600}" claude "${args[@]}" "$prompt" | node /usr/local/lib/playbook/claude-stream.mjs
     code=${PIPESTATUS[0]}
@@ -97,6 +98,7 @@ fi
 
 args=(run --agent "$agent")
 [[ -n "${PLAYBOOK_MODEL:-}" ]] && args+=(--model "$PLAYBOOK_MODEL")
+[[ -n "${PLAYBOOK_VARIANT:-}" ]] && args+=(--variant "$PLAYBOOK_VARIANT")
 
 say "agent ${agent}${PLAYBOOK_ISSUE:+ on issue #${PLAYBOOK_ISSUE}}${PLAYBOOK_MODEL:+ with ${PLAYBOOK_MODEL}}"
 set +e

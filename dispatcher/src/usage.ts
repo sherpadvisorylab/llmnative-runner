@@ -5,10 +5,11 @@ import type { GitHubApi } from './github.ts';
 // hidden marker the studio sums. On GitHub the history of an issue stays with it.
 
 /**
+ * `provider`: the provider of the organization it ran on, when the dispatcher picked it (§8.6).
  * `github`: the requests the command of the workflow made to GitHub in the turn. `contextStart` and
  * `contextEnd`: the tokens the model read for the first and for the last reply of the turn.
  */
-export type TurnUsage = { model?: string; input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; cost: number; replies: number; seconds?: number; github?: number; contextStart?: number; contextEnd?: number };
+export type TurnUsage = { model?: string; provider?: string; input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; cost: number; replies: number; seconds?: number; github?: number; contextStart?: number; contextEnd?: number };
 
 const LINES = /^\[playbook-agent\] usage (\{.*\})\s*$/gm;
 const MOVE = /<!-- playbook (\{[^\n]*?\}) -->/;
@@ -35,7 +36,7 @@ const thousands = (count: number) => (count >= 1000 ? `${(count / 1000).toFixed(
 export function usageNote(usage: TurnUsage): string {
     const parts = [
         ...(usage.seconds !== undefined ? [`${Math.max(1, Math.round(usage.seconds / 60))} min`] : []),
-        ...(usage.model ? [usage.model] : []),
+        ...(usage.model ? [usage.provider ? `${usage.model} (${usage.provider})` : usage.model] : []),
         `${thousands(usage.input + usage.cacheRead + usage.cacheWrite)} in`,
         `${thousands(usage.output + usage.reasoning)} out`,
         `$${usage.cost.toFixed(4)}`,

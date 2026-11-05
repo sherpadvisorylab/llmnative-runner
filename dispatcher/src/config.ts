@@ -71,6 +71,10 @@ export interface CompanyConfig {
     /** Turns at once of this company (MAX_PARALLEL of its file): no longer used, the machine sets them. */
     maxParallel: number;
     agentEnv: Record<string, string>;
+    /** The order of its providers for its agents (PLAYBOOK_PROVIDER_ORDER), first the preferred; none: the one of the package. */
+    providerOrder?: string[];
+    /** The accounts of each provider in order, by id and label (PLAYBOOK_ACCOUNTS); their keys are `<VAR>`, `<VAR>__2`… */
+    accounts?: Record<string, Array<{ id: string; label?: string }>>;
 }
 
 export class ConfigError extends Error {}
@@ -129,6 +133,17 @@ export function readMachineConfig(env: Vars = process.env): MachineConfig {
     };
 }
 
+/** The accounts of PLAYBOOK_ACCOUNTS; none when it is missing or not readable. */
+function accountsOf(text: string | undefined): Pick<CompanyConfig, 'accounts'> {
+    if (!text?.trim()) return {};
+    try {
+        const parsed = JSON.parse(text) as Record<string, Array<{ id?: unknown; label?: unknown }>>;
+        return { accounts: Object.fromEntries(Object.entries(parsed).map(([provider, list]) => [provider, (Array.isArray(list) ? list : []).map((account) => ({ id: String(account.id), ...(typeof account.label === 'string' && account.label ? { label: account.label } : {}) }))])) };
+    } catch {
+        return {};
+    }
+}
+
 /** The settings of one company, from its own variables. */
 export function readCompanyConfig(id: string, vars: Vars, readFile = (path: string) => readFileSync(path, 'utf8')): CompanyConfig {
     if (!COMPANY_ID_PATTERN.test(id)) throw new ConfigError(`${id}: not a company id`);
@@ -136,7 +151,9 @@ export function readCompanyConfig(id: string, vars: Vars, readFile = (path: stri
     if (!appId) throw new ConfigError(`${id}: GITHUB_APP_ID is missing`);
     const privateKey = (vars.GITHUB_APP_PRIVATE_KEY_FILE ? readFile(vars.GITHUB_APP_PRIVATE_KEY_FILE) : vars.GITHUB_APP_PRIVATE_KEY ?? '').replace(/\\n/g, '\n').trim();
     if (!privateKey.includes('PRIVATE KEY')) throw new ConfigError(`${id}: GITHUB_APP_PRIVATE_KEY (or GITHUB_APP_PRIVATE_KEY_FILE) is missing or not a PEM key`);
-    const names = [...DEFAULT_AGENT_ENV, ...(vars.AGENT_ENV ?? '').split(',').map((name) => name.trim()).filter(Boolean)];
+    const base = [...DEFAULT_AGENT_ENV, ...(vars.AGENT_ENV ?? '').split(',').map((name) => name.trim()).filter(Boolean)];
+    // The keys of the other accounts of a provider: `<VAR>__2`, `<VAR>__3`…
+    const names = [...base, ...Object.keys(vars).filter((name) => /__\d+$/.test(name) && base.includes(name.replace(/__\d+$/, '')))];
     return {
         id,
         appId,
@@ -146,6 +163,8 @@ export function readCompanyConfig(id: string, vars: Vars, readFile = (path: stri
         studioToken: vars.DISPATCHER_TOKEN || undefined,
         maxParallel: positive(vars, 'MAX_PARALLEL', 1),
         agentEnv: Object.fromEntries(names.filter((name) => vars[name]).map((name) => [name, vars[name]!])),
+        ...(vars.PLAYBOOK_PROVIDER_ORDER?.trim() ? { providerOrder: vars.PLAYBOOK_PROVIDER_ORDER.split(',').map((id) => id.trim()).filter(Boolean) } : {}),
+        ...accountsOf(vars.PLAYBOOK_ACCOUNTS),
     };
 }
 

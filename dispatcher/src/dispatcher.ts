@@ -4,6 +4,7 @@ import { readWorkflow, workOf, type Workflow } from './workflow.ts';
 import { OutputBuffer } from './output.ts';
 import { answerOf, answeredComment, interruptedClaim, maybeAnswer, type IssueComment } from './answers.ts';
 import { noteUsage, usageOfOutput, type TurnUsage } from './usage.ts';
+import { accountKey, candidateEnv, candidateName, candidates, connectedAccounts, outOfCredit, type Candidate as ModelCandidate } from './providers.ts';
 import { knowledgeKeeper, type IssueState } from './knowledge.ts';
 import { billedMinutes, failingLines, failureReport, gateVerdict, pendingGate, type GateComment, type RunJob, type WorkflowRun } from './ciGate.ts';
 import { BYTES_PER_LINE, VALUATION_MODEL, VALUE_MARKER, agentSecondsOf, eslocOf, valuationComment, valuationOf, type PullFile } from './valuation.ts';
@@ -20,6 +21,10 @@ export interface DispatcherOptions {
     failuresToBlock: number;
     /** Variables handed to every turn: the keys of the model providers, the memory. */
     agentEnv: Record<string, string>;
+    /** The order of the providers of the organization for its agents (PLAYBOOK_PROVIDER_ORDER), first the preferred; none: the one of the package. */
+    providerOrder?: string[];
+    /** The accounts of each provider in order, by id and label (PLAYBOOK_ACCOUNTS); their keys are in `agentEnv`. */
+    accounts?: Record<string, Array<{ id: string; label?: string }>>;
     /** How long the workflow of a repository is trusted before it is read again, in ms. */
     workflowTtl?: number;
     /** CRs of a repository with their pull request open at once (MAX_CHANGES): 1, one change in flight. */
@@ -65,7 +70,8 @@ export type LiveEvent =
     | { type: 'turn-ended'; at: string; repository: string; issue: number; agent: string; code: number; seconds: number; moved: boolean }
     | { type: 'handed'; at: string; repository: string; issue: number; agent: string; failures: number }
     | { type: 'issue'; at: string; repository: string; issue?: number; action: string }
-    | { type: 'turn-output'; at: string; repository: string; issue: number; agent: string; lines: string[] };
+    | { type: 'turn-output'; at: string; repository: string; issue: number; agent: string; lines: string[] }
+    | { type: 'provider-exhausted'; at: string; repository: string; issue: number; agent: string; provider: string; account: string; until: string };
 
 /** What a turn printed so far, cleaned and masked: while it runs, and after it ended until the next one. */
 export type TurnOutput = { repository: string; issue: number; agent: string; startedAt: string; lines: string[]; ended?: { code: number; seconds: number; moved: boolean } };
@@ -75,7 +81,8 @@ export type TurnRecord = { repository: string; issue: number; agent: string; sta
 
 /** What the container of a turn takes now: CPU (percent of one core), memory and its limit, in bytes. */
 export type TurnStats = { cpu: number; memory: number; limit: number };
-type Running = { repository: string; issue: number; agent: string; startedAt?: string; name?: string };
+/** `provider` and `model`: where the turn runs, when the package names the models of its agents. */
+type Running = { repository: string; issue: number; agent: string; startedAt?: string; name?: string; provider?: string; model?: string };
 
 /** The size of each repository in equivalent source lines, and the CRs already valued in it. */
 export interface SizeStore {
@@ -120,6 +127,8 @@ export class Dispatcher {
     /** The repositories whose pull requests are looked at again shortly (GitHub was still working out whether they merge). */
     private readonly conflictsAgain = new Set<string>();
     private readonly gatesAgain = new Set<string>();
+    /** The accounts of providers out of credit (`provider#account`), until when they are skipped (ms). */
+    private readonly exhausted = new Map<string, number>();
     lastReconcile?: string;
 
     private readonly sizes?: SizeStore;
@@ -147,6 +156,12 @@ export class Dispatcher {
             queued: [...this.queued.values()].map(({ repository, number, agent, priority }) => ({ repository, issue: number, agent, priority })),
             turns: [...this.turns],
             lastReconcile: this.lastReconcile,
+            // The providers out of credit for now: the turns skip them until then.
+            exhausted: [...this.exhausted.keys()].filter((key) => this.isExhausted(key)).map((key) => {
+                const [provider, account] = key.split('#');
+                const label = this.options.accounts?.[provider]?.find((item) => item.id === account)?.label;
+                return { provider, account, ...(label ? { label } : {}), until: new Date(this.exhausted.get(key)!).toISOString() };
+            }),
         };
     }
 
@@ -317,6 +332,15 @@ export class Dispatcher {
         return new Promise((resolve) => this.idle.push(resolve));
     }
 
+    /** Whether an account of a provider (`provider#account`) ran out of credit and is skipped for now. */
+    private isExhausted(key: string): boolean {
+        const until = this.exhausted.get(key);
+        if (until === undefined) return false;
+        if (until > this.now()) return true;
+        this.exhausted.delete(key);
+        return false;
+    }
+
     private async turn(candidate: Candidate): Promise<void> {
         const { repository, number, agent } = candidate;
         const key = issueKey(repository, number);
@@ -326,60 +350,97 @@ export class Dispatcher {
             // Someone moved it while it waited.
             if (!workflow || workflow.paused || issue.state !== 'open' || workOf(workflow, issue.labels).needs !== agent || !workflow.agents[agent]) return;
             const settings = workflow.agents[agent];
-            const token = await this.github.turnToken(repository, settings.permissions);
-            const started = this.now();
-            const name = `playbook-${repository.replace(/[^A-Za-z0-9_.-]/g, '-')}-${number}`;
-            this.running.set(key, { repository, issue: number, agent, startedAt: this.at(), name });
-            this.log('turn started', { issue: key, agent });
-            this.announce({ type: 'turn-started', at: this.at(), repository, issue: number, agent });
-            const output = this.follow(repository, number, agent, new Date(started).toISOString());
-            const result = await this.runTurn({
-                onOutput: output.onOutput,
-                name,
-                timeout: this.options.turnTimeout,
-                env: {
-                    ...this.options.agentEnv,
-                    PLAYBOOK_AGENT: settings.opencodeAgent,
-                    PLAYBOOK_ISSUE: String(number),
-                    PLAYBOOK_TIMEOUT: String(this.options.turnTimeout),
-                    PLAYBOOK_BRANCH: workflow.workBranch,
-                    GITHUB_REPOSITORY: repository,
-                    GITHUB_TOKEN: token,
-                    // Run by Claude Code (with the subscription of the organization): the engine and how much it reasons.
-                    ...(settings.engine === 'claude-code' ? { PLAYBOOK_ENGINE: 'claude-code', ...(settings.effort ? { PLAYBOOK_EFFORT: settings.effort } : {}) } : {}),
-                },
-            });
-            const seconds = Math.round((this.now() - started) / 1000);
-            const after = await this.github.request<Issue>('GET', `/repos/${repository}/issues/${number}`).catch((error: Error) => {
-                // Its output is kept all the same.
-                this.turnLog.write(key, result.output);
-                throw error;
-            });
-            const moved = after.state !== 'open' || workOf(workflow, after.labels).needs !== agent;
-            this.turnLog.write(key, result.output, { agent, startedAt: new Date(started).toISOString(), seconds, code: result.code, moved });
-            this.log('turn ended', { issue: key, agent, code: result.code, seconds, moved });
-            output.end({ code: result.code, seconds, moved });
-            const usage = usageOfOutput(result.output);
-            this.turns.unshift({ repository, issue: number, agent, startedAt: new Date(started).toISOString(), seconds, code: result.code, moved, ...(usage ? { usage: { ...usage, seconds } } : {}) });
-            this.turns.splice(RECENT_TURNS);
-            this.announce({ type: 'turn-ended', at: this.at(), repository, issue: number, agent, code: result.code, seconds, moved });
-            if (moved) this.failures.set(key, 0);
-            else await this.failed(workflow, repository, number, agent, result.code, result.output);
-            // What it cost, on the comment of the turn (its exit, or its failure): kept with the issue.
-            if (usage) {
-                await noteUsage(this.github, repository, number, agent, new Date(started - 1000).toISOString(), { ...usage, seconds })
-                    .catch((error) => this.log('usage not noted', { issue: key, error: (error as Error).message }));
+            // Where it runs (§8.6): each model of the agent on each provider of the organization that serves it,
+            // in its order, skipping those out of credit. A package without models: the model of its opencode agent.
+            const tries: Array<ModelCandidate | undefined> = settings.models
+                ? candidates(settings.models, connectedAccounts(this.options.agentEnv, this.options.accounts), this.options.providerOrder, (key) => this.isExhausted(key))
+                : [undefined];
+            if (!tries.length) {
+                const exhausted = [...this.exhausted.keys()].filter((key) => this.isExhausted(key)).map((key) => key.split('#')[0]).filter((provider, at, all) => all.indexOf(provider) === at);
+                const reason = exhausted.length
+                    ? `the providers of its models are out of credit for now (${exhausted.join(', ')})`
+                    : `no provider of the organization serves its models (${settings.models!.map((model) => model.name).join(', ')}): connect one in Brain → Models`;
+                this.log('turn has no provider', { issue: key, agent, reason });
+                await this.failed(workflow, repository, number, agent, 0, '', reason);
+                return;
+            }
+            for (const [index, chosen] of tries.entries()) {
+                const attempt = await this.attempt(workflow, repository, number, agent, chosen);
+                const until = chosen && !attempt.moved ? outOfCredit(attempt.output, this.now()) : undefined;
+                if (chosen && until !== undefined) {
+                    // Out of credit: this account skipped until it may have some again, the turn goes on with the next
+                    // (the next account of the provider, else the next provider).
+                    this.exhausted.set(accountKey(chosen.provider, chosen.account), until);
+                    const at = new Date(until).toISOString();
+                    this.log('provider out of credit', { issue: key, agent, provider: chosen.provider, account: chosen.account.id, until: at });
+                    this.announce({ type: 'provider-exhausted', at: this.at(), repository, issue: number, agent, provider: chosen.provider, account: chosen.account.id, until: at });
+                    if (index < tries.length - 1) continue;
+                    await this.failed(workflow, repository, number, agent, attempt.code, attempt.output, `every provider of its models is out of credit for now (${tries.map((tried) => candidateName(tried!)).filter((name, at, all) => all.indexOf(name) === at).join(', ')})`);
+                } else if (attempt.moved) this.failures.set(key, 0);
+                else await this.failed(workflow, repository, number, agent, attempt.code, attempt.output);
+                // What it cost, on the comment of the turn (its exit, or its failure): kept with the issue.
+                if (attempt.usage) {
+                    await noteUsage(this.github, repository, number, agent, new Date(attempt.started - 1000).toISOString(), attempt.usage)
+                        .catch((error) => this.log('usage not noted', { issue: key, error: (error as Error).message }));
+                }
+                return;
             }
         } catch (error) {
             this.log('turn could not run', { issue: key, agent, error: (error as Error).message });
         }
     }
 
+    /** One container of a turn, on `chosen` (none: the model of its opencode agent): what it printed, whether the issue moved. */
+    private async attempt(workflow: Workflow, repository: string, number: number, agent: string, chosen: ModelCandidate | undefined) {
+        const key = issueKey(repository, number);
+        const settings = workflow.agents[agent];
+        const token = await this.github.turnToken(repository, settings.permissions);
+        const started = this.now();
+        const name = `playbook-${repository.replace(/[^A-Za-z0-9_.-]/g, '-')}-${number}`;
+        this.running.set(key, { repository, issue: number, agent, startedAt: this.at(), name, ...(chosen ? { provider: candidateName(chosen), model: chosen.name } : {}) });
+        this.log('turn started', { issue: key, agent, ...(chosen ? { provider: chosen.provider, account: chosen.account.id, model: chosen.model } : {}) });
+        this.announce({ type: 'turn-started', at: this.at(), repository, issue: number, agent });
+        const output = this.follow(repository, number, agent, new Date(started).toISOString());
+        const result = await this.runTurn({
+            onOutput: output.onOutput,
+            name,
+            timeout: this.options.turnTimeout,
+            env: {
+                // The keys of the organization; on a try, only those of its account for its provider.
+                ...(chosen ? candidateEnv(chosen, settings.effort, this.options.agentEnv) : Object.fromEntries(Object.entries(this.options.agentEnv).filter(([name]) => !/__\d+$/.test(name)))),
+                PLAYBOOK_AGENT: settings.opencodeAgent,
+                PLAYBOOK_ISSUE: String(number),
+                PLAYBOOK_TIMEOUT: String(this.options.turnTimeout),
+                PLAYBOOK_BRANCH: workflow.workBranch,
+                GITHUB_REPOSITORY: repository,
+                GITHUB_TOKEN: token,
+                // A package of 0.40.0: an agent run by Claude Code whatever its model.
+                ...(!chosen && settings.engine === 'claude-code' ? { PLAYBOOK_ENGINE: 'claude-code', ...(settings.effort ? { PLAYBOOK_EFFORT: settings.effort } : {}) } : {}),
+            },
+        });
+        const seconds = Math.round((this.now() - started) / 1000);
+        const after = await this.github.request<Issue>('GET', `/repos/${repository}/issues/${number}`).catch((error: Error) => {
+            // Its output is kept all the same.
+            this.turnLog.write(key, result.output);
+            throw error;
+        });
+        const moved = after.state !== 'open' || workOf(workflow, after.labels).needs !== agent;
+        this.turnLog.write(key, result.output, { agent, startedAt: new Date(started).toISOString(), seconds, code: result.code, moved });
+        this.log('turn ended', { issue: key, agent, code: result.code, seconds, moved });
+        output.end({ code: result.code, seconds, moved });
+        const printed = usageOfOutput(result.output);
+        const usage = printed ? { ...printed, seconds, ...(chosen ? { provider: candidateName(chosen) } : {}) } : undefined;
+        this.turns.unshift({ repository, issue: number, agent, startedAt: new Date(started).toISOString(), seconds, code: result.code, moved, ...(usage ? { usage } : {}) });
+        this.turns.splice(RECENT_TURNS);
+        this.announce({ type: 'turn-ended', at: this.at(), repository, issue: number, agent, code: result.code, seconds, moved });
+        return { moved, code: result.code, output: result.output, usage, started };
+    }
+
     /** A turn that left the issue where it was: a comment, and past the limit a person takes it. */
-    private async failed(workflow: Workflow, repository: string, number: number, agent: string, code: number, output: string): Promise<void> {
+    private async failed(workflow: Workflow, repository: string, number: number, agent: string, code: number, output: string, reason?: string): Promise<void> {
         const key = issueKey(repository, number);
         const failures = this.failures.get(key) + 1;
-        const why = code === 124 ? 'it ran out of time' : code === 0 ? 'it ended without leaving the issue' : `it stopped with exit code ${code}`;
+        const why = reason ?? (code === 124 ? 'it ran out of time' : code === 0 ? 'it ended without leaving the issue' : `it stopped with exit code ${code}`);
         const tail = output.trim().split('\n').slice(-15).join('\n');
         const name = workflow.agents[agent]?.name ?? agent;
         const base = `/repos/${repository}/issues/${number}`;

@@ -1,4 +1,5 @@
 import type { GitHubApi, TokenPermissions } from './github.ts';
+import type { AgentModel } from './providers.ts';
 
 // The workflow of a repository as the package of the studio wrote it: `.playbook/dispatch.json` on the
 // working branch, and `.playbook/state.yaml` for the pause.
@@ -17,8 +18,12 @@ export interface Workflow {
     human: string;
     blocked: string;
     /** `opensPullRequests`: it waits while another CR of the repository has its pull request open. */
-    /** `engine`: `claude-code` for an agent run by Claude Code (absent: opencode), with its `effort`. */
-    agents: Record<string, { name: string; opencodeAgent: string; permissions: TokenPermissions; opensPullRequests?: boolean; claim?: string; engine?: 'claude-code'; effort?: string }>;
+    /**
+     * `effort`: how much it reasons. `models` (§8.6): its models, first the preferred, each with the providers
+     * of the runner that serve it; the dispatcher picks one per turn. `engine`: a package of 0.40.0, an agent
+     * run by Claude Code whatever its model.
+     */
+    agents: Record<string, { name: string; opencodeAgent: string; permissions: TokenPermissions; opensPullRequests?: boolean; claim?: string; effort?: string; models?: AgentModel[]; engine?: 'claude-code' }>;
     /** Where a source merged in sources/ goes (the Source channel), when the workflow has it. */
     sources?: { to: string; status: string };
     /** A person's comment on an issue waiting for one: back to the agent that asked, with this status; not after a route that ends the path. */

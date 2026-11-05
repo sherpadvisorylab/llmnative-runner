@@ -105,7 +105,7 @@ export function createTenant(config: CompanyConfig, version: string, deps: Tenan
         sizes: fileSizes(join(dir, 'sizes.json')),
         stats: deps.stats,
         // The turns of the machine are for every company: one alone may use them all.
-        options: { maxParallel: deps.machine.maxParallel, maxChanges: deps.machine.maxChanges, turnTimeout: deps.machine.turnTimeout, failuresToBlock: deps.machine.failuresToBlock, agentEnv: config.agentEnv },
+        options: { maxParallel: deps.machine.maxParallel, maxChanges: deps.machine.maxChanges, turnTimeout: deps.machine.turnTimeout, failuresToBlock: deps.machine.failuresToBlock, agentEnv: config.agentEnv, providerOrder: config.providerOrder, accounts: config.accounts },
         log,
         // What each turn printed: the log of the issue, and each turn on its own (kept 30 days) for the studio.
         turnLog: fileTurnLogs(dir, mask),
