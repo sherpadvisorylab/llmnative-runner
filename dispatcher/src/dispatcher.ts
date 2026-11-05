@@ -397,7 +397,7 @@ export class Dispatcher {
      * The keys of the turns and the accounts of each provider: those of the .env, with the subscriptions of
      * Claude kept on this server in their place, in the order of the organization (those it does not name yet after).
      */
-    private keys(): { env: Record<string, string>; accounts: Record<string, Array<{ id: string; label?: string }>> } {
+    keys(): { env: Record<string, string>; accounts: Record<string, Array<{ id: string; label?: string }>> } {
         const tokens = this.options.claudeTokens?.() ?? {};
         const env = { ...this.options.agentEnv };
         const accounts = { ...this.options.accounts };

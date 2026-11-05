@@ -9,6 +9,7 @@ import { DesignSessions, type DesignHost, type DesignSlots } from './designs.ts'
 import { fileTurnLogs } from './turnLogs.ts';
 import { countedGitHub, githubUsageCounter, type GitHubUsageCounter } from './githubUsage.ts';
 import { ClaudeAccounts } from './claudeAccounts.ts';
+import { ServerChats, dockerChatHost, type ChatHost } from './chats.ts';
 
 // The companies of a runner. Each one is a world of its own inside the dispatcher: its GitHub App,
 // its queue, its failures, its logs, its secrets masked in them. Nothing of a company reaches another.
@@ -20,6 +21,8 @@ export interface Tenant {
     dispatcher: Dispatcher;
     /** Its subscriptions of Claude: their tokens kept on this server only (§8.5). */
     claude: ClaudeAccounts;
+    /** Its chats of the studio with a harness here (§8.7). */
+    chats: ServerChats;
     /** Its design sessions. */
     designs: DesignSessions;
     deliveries: Deliveries;
@@ -92,7 +95,33 @@ export interface TenantDeps {
     fetch?: typeof fetch;
     /** For tests: the subscriptions of Claude of a company; by default in its folder, signed in through the image of the agents. */
     claude?: (config: CompanyConfig, dir: string) => ClaudeAccounts;
+    /** For tests: where the chats run; by default containers of the image of the agents. */
+    chatHost?: ChatHost;
 }
+
+/**
+ * The chats of each company of the machine: one for its whole life, whatever reloads its .env (a chat under
+ * way is not lost); they use the keys of its dispatcher of now. Idle ones are closed every few minutes.
+ */
+const serverChats = new Map<string, { chats: ServerChats; dispatcher: { current?: Dispatcher } }>();
+const chatsOf = (config: CompanyConfig, deps: TenantDeps, github: GitHubApi, log: Log) => {
+    let entry = serverChats.get(config.id);
+    if (!entry) {
+        const dispatcher: { current?: Dispatcher } = {};
+        const chats = new ServerChats({
+            company: config.id,
+            owner: `app-${config.appId}`,
+            image: deps.machine.image,
+            host: deps.chatHost ?? dockerChatHost(),
+            github,
+            keys: () => dispatcher.current?.keys() ?? { env: config.agentEnv, accounts: config.accounts ?? {} },
+            log,
+        });
+        setInterval(() => void chats.sweep(), 5 * 60_000).unref();
+        serverChats.set(config.id, entry = { chats, dispatcher });
+    }
+    return entry;
+};
 
 /** The subscriptions of Claude of each company of the machine: one for its whole life, whatever reloads its .env. */
 const claudeAccounts = new Map<string, ClaudeAccounts>();
@@ -139,7 +168,9 @@ export function createTenant(config: CompanyConfig, version: string, deps: Tenan
         kits: deps.designKits ?? {},
         fetch: deps.fetch,
     });
-    return { id: config.id, config, github, dispatcher, claude, designs, deliveries: new Deliveries(), mask, log, version, usage };
+    const chats = chatsOf(config, deps, github, log);
+    chats.dispatcher.current = dispatcher;
+    return { id: config.id, config, github, dispatcher, claude, chats: chats.chats, designs, deliveries: new Deliveries(), mask, log, version, usage };
 }
 
 /**

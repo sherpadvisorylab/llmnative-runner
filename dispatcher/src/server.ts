@@ -8,6 +8,7 @@ import { ImageError, imagePattern, isAdmin, type ImageHost } from './images.ts';
 import { ConfigError } from './config.ts';
 import { BackupError, type MemoryBackup } from './backup.ts';
 import { readMachine } from './machine.ts';
+import { ChatError } from './chats.ts';
 
 // The HTTP side of the runner. Every route of a company lives under its path, `/<company>/…`, and is
 // served with that company only: its webhook secret, its studio token, its dispatcher.
@@ -209,6 +210,38 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                 const sources = Array.isArray(body.sources) ? body.sources.filter((source): source is string => typeof source === 'string' && /^sources\/[A-Za-z0-9._\/-]+$/.test(source) && !source.includes('..')) : [];
                 if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repository) || !sources.length) return send(response, 400, { error: 'repository and sources are required' });
                 return send(response, 200, { opened: await dispatcher.openSources(repository, sources) });
+            }
+            // The chats of its studio with a harness here (§8.7): started for a repository, a message answered as
+            // a stream of JSON lines (text, tools, end), closed. Read only: the harness changes nothing.
+            if (rest === '/chats' || rest.startsWith('/chats/')) {
+                if (!tenant.config.studioToken) return send(response, 404, { error: 'studio access not configured' });
+                if (!fromStudio(tenant, request)) return send(response, 401, { error: 'bad token' });
+                const [, , id = '', action = ''] = rest.split('/');
+                const body = request.method === 'POST' ? JSON.parse((await readBody(request)) || '{}') as Record<string, unknown> : {};
+                try {
+                    if (request.method === 'POST' && !id) return send(response, 200, await tenant.chats.start(String(body.id ?? ''), String(body.repository ?? '')));
+                    if (request.method === 'DELETE' && id) return send(response, 200, { closed: await tenant.chats.close(id) });
+                    if (request.method === 'POST' && action === 'messages') {
+                        const model = body.model as { provider?: unknown; model?: unknown; variant?: unknown; name?: unknown } | undefined;
+                        if (!tenant.chats.has(id, String(body.repository ?? ''))) return send(response, 404, { error: 'no-chat' });
+                        if (typeof model?.provider !== 'string' || typeof model.model !== 'string') return send(response, 400, { error: 'invalid' });
+                        response.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no' });
+                        await tenant.chats.send(id, String(body.text ?? ''), {
+                            provider: model.provider,
+                            model: model.model,
+                            ...(typeof model.variant === 'string' ? { variant: model.variant } : {}),
+                            ...(typeof model.name === 'string' ? { name: model.name } : {}),
+                        }, (event) => response.write(`${JSON.stringify(event)}\n`)).catch((error: Error & { status?: number }) => {
+                            response.write(`${JSON.stringify({ type: 'error', message: error.message })}\n`);
+                        });
+                        response.end();
+                        return;
+                    }
+                } catch (error) {
+                    if (error instanceof ChatError) return send(response, error.status, { error: error.message });
+                    throw error;
+                }
+                return send(response, 404, { error: 'not found' });
             }
             // The subscriptions of Claude of the organization (§8.5): the sign-in started by its studio, the CLI
             // here, the token kept here. The answers never hold a token.
