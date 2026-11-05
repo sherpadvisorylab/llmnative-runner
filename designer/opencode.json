@@ -5,7 +5,11 @@
   "mcp": {
     "memory": {
       "type": "local",
-      "command": ["node", "/usr/local/lib/playbook/memory.mjs", "mcp"],
+      "command": [
+        "node",
+        "/usr/local/lib/playbook/memory.mjs",
+        "mcp"
+      ],
       "enabled": true
     }
   },
@@ -14,5 +18,12 @@
     "bash": "allow",
     "webfetch": "allow",
     "external_directory": "allow"
+  },
+  "provider": {
+    "opencode-go": {
+      "options": {
+        "apiKey": "{env:OPENCODE_GO_API_KEY}"
+      }
+    }
   }
 }

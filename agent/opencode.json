@@ -7,5 +7,12 @@
     "bash": "allow",
     "webfetch": "allow",
     "external_directory": "allow"
+  },
+  "provider": {
+    "opencode-go": {
+      "options": {
+        "apiKey": "{env:OPENCODE_GO_API_KEY}"
+      }
+    }
   }
 }

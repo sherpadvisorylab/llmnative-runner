@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 /** The variables of a company handed to its turns when set: the keys of the model providers and the memory. */
 export const DEFAULT_AGENT_ENV = [
     'OPENCODE_API_KEY',
+    'OPENCODE_GO_API_KEY',
     'ANTHROPIC_API_KEY',
     'OPENAI_API_KEY',
     'GEMINI_API_KEY',
