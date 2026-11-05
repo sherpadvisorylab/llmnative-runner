@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { screenOf } from './screen.ts';
 
 // The subscriptions of Claude of an organization (docs/playbook-model.md §8.5): their tokens live on this
 // server only, the one that uses them. The studio starts the sign-in and passes the code of the person; the
@@ -25,12 +26,21 @@ export const ACCOUNT_ID = /^[a-z0-9]{1,16}$/;
 /** `refused`: Anthropic said no; `no-token`: the CLI printed no token in time (what it printed is the detail). */
 export type LoginError = 'busy' | 'no-link' | 'no-session' | 'refused' | 'no-token';
 
-/** The last words the CLI printed, as a person reads them: escapes and spinners left out, tokens masked. */
+/** Anything that may be a token or a code: never shown, whatever the screen looks like. */
+const SECRET_LIKE = /sk-ant\S*|[A-Za-z0-9_\-#]{24,}/g;
+
+/**
+ * The last lines of the screen of the CLI, as a person reads them (the screen played as a terminal would):
+ * what may be a token or a code masked, spinners and stars left out.
+ */
 export function cliSaid(output: string): string {
-    return output.replace(ESCAPES, ' ').replace(/sk-ant-[A-Za-z0-9_-]{8,}/g, 'sk-ant-***').replace(/[^\x20-\x7e]+/g, ' ')
-        // The code as the CLI echoes it, masked: no wall of stars.
-        .replace(/\*{4,}\S*/g, '***').replace(/\s+/g, ' ').trim().slice(-400);
+    // Lines with words only: the drawings of the welcome screen left out.
+    return screenOf(output).filter((line) => /[A-Za-z]{3,}/.test(line)).slice(-4).join(' ')
+        .replace(SECRET_LIKE, '***').replace(/\*{4,}\S*/g, '***').replace(/[^\x20-\x7e]+/g, ' ').replace(/\s+/g, ' ').trim().slice(-400);
 }
+
+/** The token on the screen of the CLI, as a person would read it (never in its bytes: the CLI skips cells already drawn). */
+export const tokenOnScreen = (output: string): string | undefined => CLAUDE_TOKEN.exec(screenOf(output).join('\n'))?.[0];
 
 type Session = { child: ChildProcess; output: string; done: boolean; timer: NodeJS.Timeout };
 type Saved = Record<string, { token: string; at: string }>;
@@ -158,13 +168,12 @@ export class ClaudeAccounts {
         const session = this.session;
         if (!session || session.done) return { error: 'no-session' };
         if (!ACCOUNT_ID.test(id)) return { error: 'refused' };
-        const before = session.output.length;
         session.child.stdin?.write(code.trim());
         await new Promise((resolve) => setTimeout(resolve, ENTER_AFTER_MS));
         session.child.stdin?.write('\r');
         // The terminal is 1000 columns wide: the token is on one line, ended by a space or its line.
-        const token = await waitFor(session, (text) => CLAUDE_TOKEN.exec(text.slice(before).replace(ESCAPES, ''))?.[0], TOKEN_WAIT_MS);
-        const said = cliSaid(session.output.slice(before));
+        const token = await waitFor(session, tokenOnScreen, TOKEN_WAIT_MS);
+        const said = cliSaid(session.output);
         this.close();
         // What the CLI answered, for the person: Anthropic refusing the code, or something else.
         if (!token) return { error: /oauth error|wasn.t accepted|invalid|expired/i.test(said) ? 'refused' : 'no-token', ...(said ? { detail: said } : {}) };
