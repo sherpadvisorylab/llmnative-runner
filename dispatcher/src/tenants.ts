@@ -94,12 +94,21 @@ export interface TenantDeps {
     claude?: (config: CompanyConfig, dir: string) => ClaudeAccounts;
 }
 
+/** The subscriptions of Claude of each company of the machine: one for its whole life, whatever reloads its .env. */
+const claudeAccounts = new Map<string, ClaudeAccounts>();
+const claudeAccountsOf = (id: string, file: string, image: string) => {
+    let accounts = claudeAccounts.get(id);
+    if (!accounts) claudeAccounts.set(id, accounts = ClaudeAccounts.docker(file, image));
+    return accounts;
+};
+
 export function createTenant(config: CompanyConfig, version: string, deps: TenantDeps): Tenant {
     const dir = join(deps.machine.dataDir, 'organizations', config.id);
     const logs = join(dir, 'logs');
     mkdirSync(logs, { recursive: true });
     const mask = masker(config);
-    const claude = deps.claude?.(config, dir) ?? ClaudeAccounts.docker(join(dir, 'claude-accounts.json'), deps.machine.image);
+    // The same for the company across reloads of its .env: a sign-in under way is not lost.
+    const claude = deps.claude?.(config, dir) ?? claudeAccountsOf(config.id, join(dir, 'claude-accounts.json'), deps.machine.image);
     const log: Log = (line, details) => console.log(mask(JSON.stringify({ at: new Date().toISOString(), company: config.id, msg: line, ...details })));
     // Its requests to GitHub counted by the hour, repository and item (the studio shows them in Statistics).
     const usage = githubUsageCounter(join(dir, 'github-usage.json'));
@@ -188,6 +197,10 @@ export function writeSentCompany(machine: Pick<MachineConfig, 'companiesDir' | '
     const dir = join(machine.pushedDir, id);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const file = join(dir, '.env');
+    // The same settings sent again (only the date of its comment changed): the file stays, the company is not reloaded.
+    const settings = (text: string) => text.split(/\r?\n/).filter((line) => line.trim() && !line.trim().startsWith('#')).join('\n');
+    const before = existsSync(file) ? readFileSync(file, 'utf8') : undefined;
+    if (before !== undefined && settings(before) === settings(body)) return { names: Object.keys(vars), kept };
     writeFileSync(`${file}.tmp`, body, { mode: 0o600 });
     renameSync(`${file}.tmp`, file);
     return { names: Object.keys(vars), kept };
