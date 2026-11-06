@@ -20,6 +20,8 @@ const MESSAGE_MAX = 20_000;
 /** What a chat says to the studio as it answers, one JSON line each. */
 export type ChatEvent =
     | { type: 'text'; text: string }
+    /** The reasoning of the model as it is written. */
+    | { type: 'reasoning'; text: string }
     | { type: 'step'; id: string; label: string; status: 'running' | 'done' }
     | { type: 'done' }
     | { type: 'error'; message: string }
@@ -114,6 +116,8 @@ export function chatReader(engine: 'claude-code' | 'opencode', emit: (event: Cha
     let buffer = '';
     let ended = false;
     let wrote = false;
+    /** The tools said as steps: their end is said too. */
+    const shown = new Set<string>();
     const line = (raw: string) => {
         if (engine !== 'claude-code') {
             const text = raw.replace(ESCAPES, '');
@@ -132,13 +136,19 @@ export function chatReader(engine: 'claude-code' | 'opencode', emit: (event: Cha
         if (event.type === 'stream_event' && event.event?.type === 'content_block_delta' && event.event.delta?.type === 'text_delta') {
             emit({ type: 'text', text: String(event.event.delta.text ?? '') });
             wrote = true;
+        } else if (event.type === 'stream_event' && event.event?.type === 'content_block_delta' && event.event.delta?.type === 'thinking_delta') {
+            emit({ type: 'reasoning', text: String(event.event.delta.thinking ?? '') });
         } else if (event.type === 'assistant') {
             for (const block of event.message?.content ?? []) {
-                if (block.type === 'tool_use') emit({ type: 'step', id: String(block.id), label: toolLabel(String(block.name), block.input), status: 'running' });
+                // The tools of the studio are said by the studio as it runs them; looking them up is no step.
+                const name = String(block.name ?? '');
+                if (block.type !== 'tool_use' || name.startsWith('mcp__studio__') || name === 'ToolSearch') continue;
+                shown.add(String(block.id));
+                emit({ type: 'step', id: String(block.id), label: toolLabel(name, block.input), status: 'running' });
             }
         } else if (event.type === 'user') {
             for (const block of event.message?.content ?? []) {
-                if (block.type === 'tool_result') emit({ type: 'step', id: String(block.tool_use_id), label: '', status: 'done' });
+                if (block.type === 'tool_result' && shown.has(String(block.tool_use_id))) emit({ type: 'step', id: String(block.tool_use_id), label: '', status: 'done' });
             }
         } else if (event.type === 'result') {
             ended = true;
