@@ -32,6 +32,11 @@ export type ChatTool = { name: string; description: string; inputSchema: Record<
 
 /** How long a call of a tool waits for the studio (the approval of the person included). */
 export const TOOL_CALL_TIMEOUT_MS = 14 * 60_000;
+/**
+ * How long a harness may say nothing while it answers, no call of the studio waiting: then it is stuck and
+ * stopped (Claude Code writes as it reasons and as each tool ends; a call waits for the person on its own).
+ */
+export const CHAT_SILENCE_MS = 10 * 60_000;
 const MCP_SCRIPT = '/usr/local/lib/playbook/studio-mcp.mjs';
 
 /** Where a chat runs: the provider of the organization and the model its engine is given. */
@@ -42,6 +47,8 @@ export interface ChatHost {
     start(name: string, image: string, owner: string): Promise<void>;
     /** Runs a command in it with these variables; its output as it comes. */
     exec(name: string, command: string, env: Record<string, string>, onOutput: (chunk: string) => void): Promise<number>;
+    /** Stops the harness answering in it (a message stopped by the person, or stuck): its exec then ends. */
+    interrupt?(name: string): Promise<void>;
     remove(name: string): Promise<void>;
 }
 
@@ -60,6 +67,10 @@ export function dockerChatHost(command = 'docker', network?: string): ChatHost {
             if (code !== 0) throw new Error('the container of the chat did not start');
         },
         exec: (name, script, env, onOutput) => run(['exec', ...Object.keys(env).flatMap((key) => ['-e', key]), name, 'bash', '-lc', script], env, onOutput),
+        // The harness and what it started (the MCP server of the studio); the container stays for the next message.
+        async interrupt(name) {
+            await run(['exec', name, 'pkill', '-f', 'claude|opencode|studio-mcp']);
+        },
         async remove(name) {
             await run(['rm', '-f', name]);
         },
@@ -193,6 +204,8 @@ type Chat = {
     emit?: (event: ChatEvent) => void;
     /** The calls of tools waiting for the studio. */
     calls: Map<string, (answer: { result?: unknown; isError?: boolean }) => void>;
+    /** Why the message being answered was stopped: by the person (or its stream went away), or silent too long. */
+    stopped?: 'silent' | 'stopped';
 };
 
 export type ChatDeps = {
@@ -280,14 +293,25 @@ export class ServerChats {
         let tail = '';
         const reader = chatReader(engine, emit);
         const tools = chat.tools.length && this.deps.toolsUrl ? { list: chat.tools, url: this.deps.toolsUrl(chat.id), token: chat.token } : undefined;
+        // A harness that says nothing for long, no call of the studio waiting for the person, is stuck: stopped, and said.
+        let heard = this.now();
+        chat.stopped = undefined;
+        const watch = setInterval(() => {
+            if (chat.calls.size) heard = this.now();
+            else if (!chat.stopped && this.now() - heard > CHAT_SILENCE_MS) void this.interrupt(chat, 'silent');
+        }, 30_000);
         try {
             const code = await this.deps.host.exec(chat.container, chatScript(engine, chat.messages > 0, !!tools), { ...keys, ...chatConfig(engine, tools), PLAYBOOK_PROMPT: text }, (chunk) => {
+                heard = this.now();
                 tail = (tail + chunk).slice(-4000);
                 reader.push(chunk);
             });
-            reader.end(code, tail);
+            if (chat.stopped === 'silent') emit({ type: 'error', message: 'silent' });
+            else if (chat.stopped === 'stopped') emit({ type: 'done' });
+            else reader.end(code, tail);
             chat.messages += 1;
         } finally {
+            clearInterval(watch);
             chat.busy = false;
             chat.emit = undefined;
             // The calls still waiting end with the message.
@@ -295,6 +319,20 @@ export class ServerChats {
             chat.calls.clear();
             chat.lastActive = this.now();
         }
+    }
+
+    /** Stops the message a chat is answering (the person stopped it, or its stream went away): its harness ended. */
+    async stop(id: string): Promise<boolean> {
+        const chat = this.chats.get(id);
+        if (!chat?.busy || chat.stopped) return false;
+        await this.interrupt(chat, 'stopped');
+        return true;
+    }
+
+    private async interrupt(chat: { container: string; stopped?: 'silent' | 'stopped' }, why: 'silent' | 'stopped'): Promise<void> {
+        chat.stopped = why;
+        this.deps.log('chat interrupted', { chat: chat.container, why });
+        await this.deps.host.interrupt?.(chat.container).catch(() => undefined);
     }
 
     /**

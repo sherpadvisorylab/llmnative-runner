@@ -244,6 +244,11 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                         // A line every 15 s while the harness thinks or waits for a tool: a reply silent for minutes
                         // would be cut by what is in between (the fetch of the studio stops after 5 minutes without data).
                         const alive = setInterval(() => response.write(`${JSON.stringify({ type: 'ping' })}\n`), 15_000);
+                        // The person stopped the reply (or the studio went away): its harness stopped too, the chat free again.
+                        let finished = false;
+                        response.on('close', () => {
+                            if (!finished) void tenant.chats.stop(id);
+                        });
                         await tenant.chats.send(id, String(body.text ?? ''), {
                             provider: model.provider,
                             model: model.model,
@@ -252,6 +257,7 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                         }, (event) => response.write(`${JSON.stringify(event)}\n`)).catch((error: Error & { status?: number }) => {
                             response.write(`${JSON.stringify({ type: 'error', message: error.message })}\n`);
                         });
+                        finished = true;
                         clearInterval(alive);
                         response.end();
                         return;
