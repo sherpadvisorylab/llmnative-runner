@@ -40,7 +40,7 @@ export const CHAT_SILENCE_MS = 10 * 60_000;
 const MCP_SCRIPT = '/usr/local/lib/playbook/studio-mcp.mjs';
 
 /** Where a chat runs: the provider of the organization and the model its engine is given. */
-export type ChatModel = { provider: string; model: string; variant?: string; name?: string };
+export type ChatModel = { provider: string; model: string; variant?: string; name?: string; effort?: string };
 
 export interface ChatHost {
     /** Starts the container of a chat, idle until a message; on the network of the dispatcher, when it has one. */
@@ -91,7 +91,7 @@ export function chatScript(engine: 'claude-code' | 'opencode', continued: boolea
         // The subscription, never an API key; the prompt from stdin (the list of tools would take it).
         const mcp = tools ? `umask 077 && printf '%s' "$PLAYBOOK_MCP" > /tmp/studio-mcp.json && ` : '';
         const allow = tools ? ' --mcp-config /tmp/studio-mcp.json --allowedTools mcp__studio' : '';
-        return `cd /work/repo && ${mcp}printf '%s' "$PLAYBOOK_PROMPT" | env -u ANTHROPIC_API_KEY -u PLAYBOOK_MCP DISABLE_AUTOUPDATER=1 claude -p --output-format stream-json --verbose --include-partial-messages --model "$PLAYBOOK_MODEL"${continued ? ' --continue' : ''}${allow} --disallowedTools Edit Write NotebookEdit Bash`;
+        return `cd /work/repo && ${mcp}printf '%s' "$PLAYBOOK_PROMPT" | env -u ANTHROPIC_API_KEY -u PLAYBOOK_MCP DISABLE_AUTOUPDATER=1 claude -p --output-format stream-json --verbose --include-partial-messages --model "$PLAYBOOK_MODEL"\${PLAYBOOK_EFFORT:+ --effort "$PLAYBOOK_EFFORT"}${continued ? ' --continue' : ''}${allow} --disallowedTools Edit Write NotebookEdit Bash`;
     }
     return `cd /work/repo && opencode run --model "$PLAYBOOK_MODEL"\${PLAYBOOK_VARIANT:+ --variant "$PLAYBOOK_VARIANT"}${continued ? ' --continue' : ''} "$PLAYBOOK_PROMPT"`;
 }
@@ -286,13 +286,18 @@ export class ServerChats {
         if (!account) throw new ChatError('no-provider', 409);
         const engine = model.provider === CLAUDE_CODE ? 'claude-code' : 'opencode';
         const candidate: Candidate = { provider: model.provider, model: model.model, ...(model.variant ? { variant: model.variant } : {}), name: model.name ?? model.model, account };
-        const keys = candidateEnv(candidate, undefined, env);
+        // How much Claude Code reasons (Brain, §8.7); opencode by the variant of the model.
+        const effort = engine === 'claude-code' && model.effort && /^(low|medium|high|xhigh|max)$/.test(model.effort) ? model.effort : undefined;
+        const keys = candidateEnv(candidate, effort, env);
         chat.busy = true;
         chat.emit = emit;
         chat.lastActive = this.now();
         let tail = '';
         const reader = chatReader(engine, emit);
         const tools = chat.tools.length && this.deps.toolsUrl ? { list: chat.tools, url: this.deps.toolsUrl(chat.id), token: chat.token } : undefined;
+        // Each message said in the log: where it runs, how it ended and how long it took.
+        const began = this.now();
+        this.deps.log('chat message', { chat: id, provider: model.provider, model: model.model, ...(effort ? { effort } : {}), ...(model.variant ? { variant: model.variant } : {}) });
         // A harness that says nothing for long, no call of the studio waiting for the person, is stuck: stopped, and said.
         let heard = this.now();
         chat.stopped = undefined;
@@ -309,6 +314,7 @@ export class ServerChats {
             if (chat.stopped === 'silent') emit({ type: 'error', message: 'silent' });
             else if (chat.stopped === 'stopped') emit({ type: 'done' });
             else reader.end(code, tail);
+            this.deps.log('chat answered', { chat: id, code, seconds: Math.round((this.now() - began) / 1000), ...(chat.stopped ? { stopped: chat.stopped } : {}), ...(code !== 0 && !chat.stopped ? { tail: tail.replace(/sk-ant-[A-Za-z0-9_-]+/g, '[token]').slice(-300) } : {}) });
             chat.messages += 1;
         } finally {
             clearInterval(watch);

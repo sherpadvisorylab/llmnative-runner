@@ -237,7 +237,7 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                     }
                     if (request.method === 'DELETE' && id) return send(response, 200, { closed: await tenant.chats.close(id) });
                     if (request.method === 'POST' && action === 'messages') {
-                        const model = body.model as { provider?: unknown; model?: unknown; variant?: unknown; name?: unknown } | undefined;
+                        const model = body.model as { provider?: unknown; model?: unknown; variant?: unknown; name?: unknown; effort?: unknown } | undefined;
                         if (!tenant.chats.has(id, String(body.repository ?? ''))) return send(response, 404, { error: 'no-chat' });
                         if (typeof model?.provider !== 'string' || typeof model.model !== 'string') return send(response, 400, { error: 'invalid' });
                         response.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no' });
@@ -254,6 +254,7 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                             model: model.model,
                             ...(typeof model.variant === 'string' ? { variant: model.variant } : {}),
                             ...(typeof model.name === 'string' ? { name: model.name } : {}),
+                            ...(typeof model.effort === 'string' ? { effort: model.effort } : {}),
                         }, (event) => response.write(`${JSON.stringify(event)}\n`)).catch((error: Error & { status?: number }) => {
                             response.write(`${JSON.stringify({ type: 'error', message: error.message })}\n`);
                         });
