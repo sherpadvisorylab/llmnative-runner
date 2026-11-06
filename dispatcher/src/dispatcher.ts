@@ -334,8 +334,13 @@ export class Dispatcher {
         return new Promise((resolve) => this.idle.push(resolve));
     }
 
-    /** Whether an account of a provider (`provider#account`) ran out of credit and is skipped for now. */
-    private isExhausted(key: string): boolean {
+    /** An account of a provider (`provider#account`) out of credit until `until`: the turns and the chats skip it. */
+    markExhausted(key: string, until: number): void {
+        this.exhausted.set(key, until);
+    }
+
+    /** Whether an account of a provider (`provider#account`) ran out of credit and is skipped for now (the chats ask it too). */
+    isExhausted(key: string): boolean {
         const until = this.exhausted.get(key);
         if (until === undefined) return false;
         if (until > this.now()) return true;

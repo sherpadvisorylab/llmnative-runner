@@ -121,6 +121,11 @@ const chatsOf = (config: CompanyConfig, deps: TenantDeps, github: GitHubApi, log
             ...(deps.chatNetwork ? { toolsUrl: (chat: string) => `${deps.chatNetwork!.address}/${config.id}/chats/${chat}/tool` } : {}),
             github,
             keys: () => dispatcher.current?.keys() ?? { env: config.agentEnv, accounts: config.accounts ?? {} },
+            // The accounts out of credit, the same as for the turns: what a chat finds out, the turns skip too.
+            credit: {
+                exhausted: (key) => dispatcher.current?.isExhausted(key) ?? false,
+                spent: (key, until) => dispatcher.current?.markExhausted(key, until),
+            },
             log,
         });
         setInterval(() => void chats.sweep(), 5 * 60_000).unref();

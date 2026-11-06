@@ -118,8 +118,22 @@ const OUT_OF_CREDIT = [
 export function outOfCredit(output: string, now: number): number | undefined {
     const tail = output.trim().split('\n').slice(-40).join('\n');
     if (!OUT_OF_CREDIT.some((pattern) => pattern.test(tail))) return undefined;
-    // Claude Code: "Claude AI usage limit reached|1767225600" (seconds).
+    // Claude Code: "Claude AI usage limit reached|1767225600" (seconds), or "resets Nov 8, 6pm (UTC)".
     const reset = /usage limit reached\|(\d{10})/i.exec(tail);
-    const at = reset ? Number(reset[1]) * 1000 : NaN;
-    return at > now ? at : now + EXHAUSTED_MS;
+    const at = reset ? Number(reset[1]) * 1000 : resetInWords(tail, now);
+    return at && at > now ? at : now + EXHAUSTED_MS;
+}
+
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/** "resets Nov 8, 6pm (UTC)", "resets Nov 8, 6:30pm (UTC)": when, in the year to come (never in the past). */
+function resetInWords(tail: string, now: number): number | undefined {
+    const match = /resets\s+([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(UTC\)/i.exec(tail);
+    if (!match) return undefined;
+    const month = MONTHS.indexOf(match[1].toLowerCase());
+    if (month < 0) return undefined;
+    const hour = (Number(match[3]) % 12) + (match[5].toLowerCase() === 'pm' ? 12 : 0);
+    const year = new Date(now).getUTCFullYear();
+    const at = Date.UTC(year, month, Number(match[2]), hour, Number(match[4] ?? 0));
+    return at > now ? at : Date.UTC(year + 1, month, Number(match[2]), hour, Number(match[4] ?? 0));
 }

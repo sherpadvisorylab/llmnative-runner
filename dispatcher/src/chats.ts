@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { GitHubApi } from './github.ts';
-import { CLAUDE_CODE, candidateEnv, connectedAccounts, type Candidate } from './providers.ts';
+import { CLAUDE_CODE, accountKey, candidateEnv, connectedAccounts, outOfCredit, type Candidate } from './providers.ts';
 
 // The chats of the studio with a harness on the server (docs/playbook-model.md §8.7): Agentico talks to Claude
 // Code (with the subscription of the organization) or to opencode (with its keys) running here, next to the
@@ -217,6 +217,8 @@ export type ChatDeps = {
     /** The keys of the turns and the accounts of each provider, as the dispatcher has them now. */
     keys: () => { env: Record<string, string>; accounts: Record<string, Array<{ id: string; label?: string }>> };
     log: (line: string, details?: Record<string, unknown>) => void;
+    /** The accounts out of credit (`provider#account`), shared with the turns: skipped, and those found out told. */
+    credit?: { exhausted: (key: string) => boolean; spent: (key: string, until: number) => void };
     now?: () => number;
     /** Where the MCP server of a chat calls the dispatcher back, from the container; none: no tools. */
     toolsUrl?: (chatId: string) => string;
@@ -282,18 +284,17 @@ export class ServerChats {
         if (chat.busy) throw new ChatError('busy', 409);
         if (!text.trim() || text.length > MESSAGE_MAX) throw new ChatError('invalid', 400);
         const { env, accounts } = this.deps.keys();
-        const account = connectedAccounts(env, accounts)[model.provider]?.[0];
-        if (!account) throw new ChatError('no-provider', 409);
+        const all = connectedAccounts(env, accounts)[model.provider] ?? [];
+        if (!all.length) throw new ChatError('no-provider', 409);
+        // Its accounts in their order, those out of credit left out (§8.6): the next one when one runs out.
+        const usable = all.filter((account) => !this.deps.credit?.exhausted(accountKey(model.provider, account)));
+        if (!usable.length) throw new ChatError('no-credit', 409);
         const engine = model.provider === CLAUDE_CODE ? 'claude-code' : 'opencode';
-        const candidate: Candidate = { provider: model.provider, model: model.model, ...(model.variant ? { variant: model.variant } : {}), name: model.name ?? model.model, account };
         // How much Claude Code reasons (Brain, §8.7); opencode by the variant of the model.
         const effort = engine === 'claude-code' && model.effort && /^(low|medium|high|xhigh|max)$/.test(model.effort) ? model.effort : undefined;
-        const keys = candidateEnv(candidate, effort, env);
         chat.busy = true;
         chat.emit = emit;
         chat.lastActive = this.now();
-        let tail = '';
-        const reader = chatReader(engine, emit);
         const tools = chat.tools.length && this.deps.toolsUrl ? { list: chat.tools, url: this.deps.toolsUrl(chat.id), token: chat.token } : undefined;
         // Each message said in the log: where it runs, how it ended and how long it took.
         const began = this.now();
@@ -306,15 +307,44 @@ export class ServerChats {
             else if (!chat.stopped && this.now() - heard > CHAT_SILENCE_MS) void this.interrupt(chat, 'silent');
         }, 30_000);
         try {
-            const code = await this.deps.host.exec(chat.container, chatScript(engine, chat.messages > 0, !!tools), { ...keys, ...chatConfig(engine, tools), PLAYBOOK_PROMPT: text }, (chunk) => {
-                heard = this.now();
-                tail = (tail + chunk).slice(-4000);
-                reader.push(chunk);
-            });
-            if (chat.stopped === 'silent') emit({ type: 'error', message: 'silent' });
-            else if (chat.stopped === 'stopped') emit({ type: 'done' });
-            else reader.end(code, tail);
-            this.deps.log('chat answered', { chat: id, code, seconds: Math.round((this.now() - began) / 1000), ...(chat.stopped ? { stopped: chat.stopped } : {}), ...(code !== 0 && !chat.stopped ? { tail: tail.replace(/sk-ant-[A-Za-z0-9_-]+/g, '[token]').slice(-300) } : {}) });
+            for (const [index, account] of usable.entries()) {
+                const candidate: Candidate = { provider: model.provider, model: model.model, ...(model.variant ? { variant: model.variant } : {}), name: model.name ?? model.model, account };
+                const keys = candidateEnv(candidate, effort, env);
+                let tail = '';
+                // Its end (done, error) held back until it is known whether the account ran out of credit: then the
+                // message runs again on the next one, the person seeing only the reply.
+                let shown = false;
+                let ending: ChatEvent | undefined;
+                const reader = chatReader(engine, (event) => {
+                    if (event.type === 'done' || event.type === 'error') ending = event;
+                    else {
+                        shown = true;
+                        emit(event);
+                    }
+                });
+                const code = await this.deps.host.exec(chat.container, chatScript(engine, chat.messages > 0, !!tools), { ...keys, ...chatConfig(engine, tools), PLAYBOOK_PROMPT: text }, (chunk) => {
+                    heard = this.now();
+                    tail = (tail + chunk).slice(-4000);
+                    reader.push(chunk);
+                });
+                if (!chat.stopped) reader.end(code, tail);
+                const until = !chat.stopped && !shown && ending?.type === 'error' ? outOfCredit(tail, this.now()) : undefined;
+                this.deps.log('chat answered', {
+                    chat: id, code, seconds: Math.round((this.now() - began) / 1000), account: account.id,
+                    ...(chat.stopped ? { stopped: chat.stopped } : {}),
+                    ...(until ? { outOfCreditUntil: new Date(until).toISOString() } : {}),
+                    ...(code !== 0 && !chat.stopped ? { tail: tail.replace(/sk-ant-[A-Za-z0-9_-]+/g, '[token]').slice(-300) } : {}),
+                });
+                if (until !== undefined) {
+                    // Out of credit: this account skipped (by the turns too) until it may have some again; the next one.
+                    this.deps.credit?.spent(accountKey(model.provider, account), until);
+                    if (index < usable.length - 1) continue;
+                }
+                if (chat.stopped === 'silent') emit({ type: 'error', message: 'silent' });
+                else if (chat.stopped === 'stopped') emit({ type: 'done' });
+                else if (ending) emit(ending);
+                break;
+            }
             chat.messages += 1;
         } finally {
             clearInterval(watch);
