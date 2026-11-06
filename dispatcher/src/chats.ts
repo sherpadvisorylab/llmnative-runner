@@ -28,7 +28,11 @@ export type ChatEvent =
     | { type: 'tool-call'; id: string; name: string; input: Record<string, unknown> };
 
 /** A tool of the studio the harness may call (the MCP Tool format). */
-export type ChatTool = { name: string; description: string; inputSchema: Record<string, unknown> };
+/** `endsTurn`: once the studio answered it, the message ends (what the tool gave says it all, e.g. a draft shown as a card). */
+export type ChatTool = { name: string; description: string; inputSchema: Record<string, unknown>; endsTurn?: boolean };
+
+/** How long a harness may go on after a tool that ends its message, before the message is ended for it. */
+export const ENDS_TURN_GRACE_MS = 15_000;
 
 /** How long a call of a tool waits for the studio (the approval of the person included). */
 export const TOOL_CALL_TIMEOUT_MS = 14 * 60_000;
@@ -69,7 +73,9 @@ export function dockerChatHost(command = 'docker', network?: string): ChatHost {
         exec: (name, script, env, onOutput) => run(['exec', ...Object.keys(env).flatMap((key) => ['-e', key]), name, 'bash', '-lc', script], env, onOutput),
         // The harness and what it started (the MCP server of the studio); the container stays for the next message.
         async interrupt(name) {
-            await run(['exec', name, 'pkill', '-f', 'claude|opencode|studio-mcp']);
+            // Every process of the container but its first (sleep infinity): the harness and what it started. No pkill
+            // nor ps in the image: kill -1 is in every shell.
+            await run(['exec', name, 'sh', '-c', 'kill -TERM -1 2>/dev/null; sleep 2; kill -KILL -1 2>/dev/null; true']);
         },
         async remove(name) {
             await run(['rm', '-f', name]);
@@ -98,7 +104,8 @@ export function chatScript(engine: 'claude-code' | 'opencode', continued: boolea
 
 /** The variables of a message that give the harness its permissions and, with tools, the MCP server of the studio. */
 export function chatConfig(engine: 'claude-code' | 'opencode', tools: { list: ChatTool[]; url: string; token: string } | undefined): Record<string, string> {
-    const environment = tools ? { PLAYBOOK_TOOLS: JSON.stringify(tools.list), PLAYBOOK_TOOLS_URL: tools.url, PLAYBOOK_TOOLS_TOKEN: tools.token } : undefined;
+    // The harness sees the tools as MCP has them; what the dispatcher keeps of them (endsTurn) stays here.
+    const environment = tools ? { PLAYBOOK_TOOLS: JSON.stringify(tools.list.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }))), PLAYBOOK_TOOLS_URL: tools.url, PLAYBOOK_TOOLS_TOKEN: tools.token } : undefined;
     if (engine === 'claude-code') {
         return environment ? { PLAYBOOK_MCP: JSON.stringify({ mcpServers: { studio: { command: 'node', args: [MCP_SCRIPT], env: environment } } }) } : {};
     }
@@ -204,8 +211,8 @@ type Chat = {
     emit?: (event: ChatEvent) => void;
     /** The calls of tools waiting for the studio. */
     calls: Map<string, (answer: { result?: unknown; isError?: boolean }) => void>;
-    /** Why the message being answered was stopped: by the person (or its stream went away), or silent too long. */
-    stopped?: 'silent' | 'stopped';
+    /** Why the message being answered was stopped: by the person (or its stream went away), silent too long, or ended after a tool that ends it. */
+    stopped?: 'silent' | 'stopped' | 'ended';
 };
 
 export type ChatDeps = {
@@ -230,7 +237,7 @@ const toolsOf = (value: unknown): ChatTool[] => {
     return value.flatMap((tool) => {
         const entry = tool as Partial<ChatTool>;
         return typeof entry?.name === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(entry.name) && typeof entry.description === 'string' && entry.inputSchema && typeof entry.inputSchema === 'object'
-            ? [{ name: entry.name, description: entry.description.slice(0, 2000), inputSchema: entry.inputSchema }]
+            ? [{ name: entry.name, description: entry.description.slice(0, 2000), inputSchema: entry.inputSchema, ...(entry.endsTurn === true ? { endsTurn: true } : {}) }]
             : [];
     });
 };
@@ -344,7 +351,7 @@ export class ServerChats {
                     if (index < usable.length - 1) continue;
                 }
                 if (chat.stopped === 'silent') emit({ type: 'error', message: 'silent' });
-                else if (chat.stopped === 'stopped') emit({ type: 'done' });
+                else if (chat.stopped === 'stopped' || chat.stopped === 'ended') emit({ type: 'done' });
                 else if (ending) emit(ending);
                 break;
             }
@@ -368,7 +375,7 @@ export class ServerChats {
         return true;
     }
 
-    private async interrupt(chat: { container: string; stopped?: 'silent' | 'stopped' }, why: 'silent' | 'stopped'): Promise<void> {
+    private async interrupt(chat: { container: string; stopped?: 'silent' | 'stopped' | 'ended' }, why: 'silent' | 'stopped' | 'ended'): Promise<void> {
         chat.stopped = why;
         this.deps.log('chat interrupted', { chat: chat.container, why });
         await this.deps.host.interrupt?.(chat.container).catch(() => undefined);
@@ -394,9 +401,18 @@ export class ServerChats {
             chat.calls.set(callId, (answer) => {
                 clearTimeout(timer);
                 chat.calls.delete(callId);
+                this.deps.log('chat tool answered', { chat: id, tool: name, seconds: Math.round((this.now() - asked) / 1000), ...(answer.isError ? { error: true } : {}) });
                 resolve(answer);
+                // A tool that ends the message (a draft shown as a card): the harness has a moment to close it, then
+                // the message is ended for it, what it wrote kept.
+                if (!answer.isError && chat.tools.find((tool) => tool.name === name)?.endsTurn) {
+                    setTimeout(() => {
+                        if (chat.busy && !chat.stopped) void this.interrupt(chat, 'ended');
+                    }, ENDS_TURN_GRACE_MS).unref?.();
+                }
             });
         });
+        const asked = this.now();
         chat.lastActive = this.now();
         chat.emit({ type: 'tool-call', id: callId, name, input });
         this.deps.log('chat tool called', { chat: id, tool: name });
