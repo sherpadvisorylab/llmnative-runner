@@ -97,6 +97,11 @@ export interface TenantDeps {
     claude?: (config: CompanyConfig, dir: string) => ClaudeAccounts;
     /** For tests: where the chats run; by default containers of the image of the agents. */
     chatHost?: ChatHost;
+    /**
+     * The network of the dispatcher, which the containers of the chats join, and its address there: their MCP
+     * server calls back the tools of the studio. None (a dispatcher outside Docker): chats without tools.
+     */
+    chatNetwork?: { network: string; address: string };
 }
 
 /**
@@ -112,7 +117,8 @@ const chatsOf = (config: CompanyConfig, deps: TenantDeps, github: GitHubApi, log
             company: config.id,
             owner: `app-${config.appId}`,
             image: deps.machine.image,
-            host: deps.chatHost ?? dockerChatHost(),
+            host: deps.chatHost ?? dockerChatHost('docker', deps.chatNetwork?.network),
+            ...(deps.chatNetwork ? { toolsUrl: (chat: string) => `${deps.chatNetwork!.address}/${config.id}/chats/${chat}/tool` } : {}),
             github,
             keys: () => dispatcher.current?.keys() ?? { env: config.agentEnv, accounts: config.accounts ?? {} },
             log,

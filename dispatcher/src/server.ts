@@ -213,13 +213,28 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
             }
             // The chats of its studio with a harness here (§8.7): started for a repository, a message answered as
             // a stream of JSON lines (text, tools, end), closed. Read only: the harness changes nothing.
+            // A call of a tool of the studio by the harness of a chat, from its container: the token of the chat, not of the studio.
+            if (request.method === 'POST' && /^\/chats\/[a-f0-9]{8}\/tool$/.test(rest)) {
+                const body = JSON.parse((await readBody(request)) || '{}') as Record<string, unknown>;
+                try {
+                    const input = body.input && typeof body.input === 'object' ? body.input as Record<string, unknown> : {};
+                    return send(response, 200, await tenant.chats.callTool(rest.split('/')[2], String(request.headers['x-chat-token'] ?? ''), String(body.name ?? ''), input));
+                } catch (error) {
+                    if (error instanceof ChatError) return send(response, error.status, { error: error.message });
+                    throw error;
+                }
+            }
             if (rest === '/chats' || rest.startsWith('/chats/')) {
                 if (!tenant.config.studioToken) return send(response, 404, { error: 'studio access not configured' });
                 if (!fromStudio(tenant, request)) return send(response, 401, { error: 'bad token' });
-                const [, , id = '', action = ''] = rest.split('/');
+                const [, , id = '', action = '', callId = ''] = rest.split('/');
                 const body = request.method === 'POST' ? JSON.parse((await readBody(request)) || '{}') as Record<string, unknown> : {};
                 try {
-                    if (request.method === 'POST' && !id) return send(response, 200, await tenant.chats.start(String(body.id ?? ''), String(body.repository ?? '')));
+                    if (request.method === 'POST' && !id) return send(response, 200, await tenant.chats.start(String(body.id ?? ''), String(body.repository ?? ''), body.tools));
+                    // What the studio gave for a call of one of its tools.
+                    if (request.method === 'POST' && action === 'calls' && callId) {
+                        return send(response, 200, { answered: tenant.chats.answerTool(id, callId, { result: body.result, ...(body.isError ? { isError: true } : {}) }) });
+                    }
                     if (request.method === 'DELETE' && id) return send(response, 200, { closed: await tenant.chats.close(id) });
                     if (request.method === 'POST' && action === 'messages') {
                         const model = body.model as { provider?: unknown; model?: unknown; variant?: unknown; name?: unknown } | undefined;

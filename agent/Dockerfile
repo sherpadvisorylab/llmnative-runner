@@ -20,6 +20,8 @@ COPY --chmod=0755 entrypoint.sh /usr/local/bin/playbook-agent
 RUN mkdir -p /usr/local/lib/playbook && chmod 0755 /usr/local/lib/playbook
 COPY --chmod=0644 usage.mjs /usr/local/lib/playbook/usage.mjs
 COPY --chmod=0644 claude-stream.mjs /usr/local/lib/playbook/claude-stream.mjs
+# The tools of the studio for a chat on the server (MCP on stdio, §8.7).
+COPY --chmod=0644 studio-mcp.mjs /usr/local/lib/playbook/studio-mcp.mjs
 COPY --chown=agent:agent opencode.json /home/agent/.config/opencode/opencode.json
 
 USER agent

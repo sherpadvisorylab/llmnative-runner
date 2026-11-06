@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { GitHubApi } from './github.ts';
 import { CLAUDE_CODE, candidateEnv, connectedAccounts, type Candidate } from './providers.ts';
 
@@ -6,7 +7,9 @@ import { CLAUDE_CODE, candidateEnv, connectedAccounts, type Candidate } from './
 // Code (with the subscription of the organization) or to opencode (with its keys) running here, next to the
 // repository of a project, read only. One container per chat, the repository cloned once; each message runs
 // the harness in it, continuing the conversation of the one before, and its reply goes to the studio as it
-// comes: text, the tools it uses, its end.
+// comes: text, the tools it uses, its end. The tools of the studio reach the harness as an MCP server in the
+// container (runner/agent/studio-mcp.mjs): each call comes here with the token of the chat, goes to the studio
+// as an event of the reply (the person approves what needs it, the studio runs it) and its answer goes back.
 
 export const CHAT_LABEL = 'playbook.chat';
 /** A chat no one wrote to for this long is closed (its container removed). */
@@ -19,13 +22,21 @@ export type ChatEvent =
     | { type: 'text'; text: string }
     | { type: 'step'; id: string; label: string; status: 'running' | 'done' }
     | { type: 'done' }
-    | { type: 'error'; message: string };
+    | { type: 'error'; message: string }
+    | { type: 'tool-call'; id: string; name: string; input: Record<string, unknown> };
+
+/** A tool of the studio the harness may call (the MCP Tool format). */
+export type ChatTool = { name: string; description: string; inputSchema: Record<string, unknown> };
+
+/** How long a call of a tool waits for the studio (the approval of the person included). */
+export const TOOL_CALL_TIMEOUT_MS = 14 * 60_000;
+const MCP_SCRIPT = '/usr/local/lib/playbook/studio-mcp.mjs';
 
 /** Where a chat runs: the provider of the organization and the model its engine is given. */
 export type ChatModel = { provider: string; model: string; variant?: string; name?: string };
 
 export interface ChatHost {
-    /** Starts the container of a chat, idle until a message. */
+    /** Starts the container of a chat, idle until a message; on the network of the dispatcher, when it has one. */
     start(name: string, image: string, owner: string): Promise<void>;
     /** Runs a command in it with these variables; its output as it comes. */
     exec(name: string, command: string, env: Record<string, string>, onOutput: (chunk: string) => void): Promise<number>;
@@ -33,7 +44,7 @@ export interface ChatHost {
 }
 
 /** The containers of the chats, through the Docker socket; the values of the variables never on a command line. */
-export function dockerChatHost(command = 'docker'): ChatHost {
+export function dockerChatHost(command = 'docker', network?: string): ChatHost {
     const run = (args: string[], env: Record<string, string> = {}, onOutput?: (chunk: string) => void) => new Promise<number>((resolve) => {
         const child = spawn(command, args, { env: { PATH: process.env.PATH, DOCKER_HOST: process.env.DOCKER_HOST, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
         child.stdout.on('data', (chunk: Buffer) => onOutput?.(chunk.toString('utf8')));
@@ -43,7 +54,7 @@ export function dockerChatHost(command = 'docker'): ChatHost {
     });
     return {
         async start(name, image, owner) {
-            const code = await run(['run', '-d', '--name', name, '--label', `${CHAT_LABEL}=${owner}`, '--entrypoint', 'sleep', image, 'infinity']);
+            const code = await run(['run', '-d', '--name', name, '--label', `${CHAT_LABEL}=${owner}`, ...(network ? ['--network', network] : []), '--entrypoint', 'sleep', image, 'infinity']);
             if (code !== 0) throw new Error('the container of the chat did not start');
         },
         exec: (name, script, env, onOutput) => run(['exec', ...Object.keys(env).flatMap((key) => ['-e', key]), name, 'bash', '-lc', script], env, onOutput),
@@ -57,13 +68,33 @@ export function dockerChatHost(command = 'docker'): ChatHost {
 const CLONE = `git config --global credential.helper '!f() { echo username=x-access-token; echo "password=\${GITHUB_TOKEN}"; }; f'
 git clone --quiet --depth 50 "https://github.com/\${GITHUB_REPOSITORY}.git" /work/repo && git config --global --unset credential.helper`;
 
-/** The harness, on the message in PLAYBOOK_PROMPT; read only: no tool that writes or runs commands. */
-export function chatScript(engine: 'claude-code' | 'opencode', continued: boolean): string {
+/**
+ * The harness, on the message in PLAYBOOK_PROMPT; read only: no tool that writes or runs commands. With the
+ * tools of the studio, its MCP server: for Claude Code a file written from PLAYBOOK_MCP (the token of the chat
+ * never on a command line), for opencode its configuration in OPENCODE_CONFIG_CONTENT.
+ */
+export function chatScript(engine: 'claude-code' | 'opencode', continued: boolean, tools = false): string {
     if (engine === 'claude-code') {
         // The subscription, never an API key; the prompt from stdin (the list of tools would take it).
-        return `cd /work/repo && printf '%s' "$PLAYBOOK_PROMPT" | env -u ANTHROPIC_API_KEY DISABLE_AUTOUPDATER=1 claude -p --output-format stream-json --verbose --include-partial-messages --model "$PLAYBOOK_MODEL"${continued ? ' --continue' : ''} --disallowedTools Edit Write NotebookEdit Bash`;
+        const mcp = tools ? `umask 077 && printf '%s' "$PLAYBOOK_MCP" > /tmp/studio-mcp.json && ` : '';
+        const allow = tools ? ' --mcp-config /tmp/studio-mcp.json --allowedTools mcp__studio' : '';
+        return `cd /work/repo && ${mcp}printf '%s' "$PLAYBOOK_PROMPT" | env -u ANTHROPIC_API_KEY -u PLAYBOOK_MCP DISABLE_AUTOUPDATER=1 claude -p --output-format stream-json --verbose --include-partial-messages --model "$PLAYBOOK_MODEL"${continued ? ' --continue' : ''}${allow} --disallowedTools Edit Write NotebookEdit Bash`;
     }
-    return `cd /work/repo && OPENCODE_CONFIG_CONTENT='{"permission":{"edit":"deny","bash":"deny"}}' opencode run --model "$PLAYBOOK_MODEL"\${PLAYBOOK_VARIANT:+ --variant "$PLAYBOOK_VARIANT"}${continued ? ' --continue' : ''} "$PLAYBOOK_PROMPT"`;
+    return `cd /work/repo && opencode run --model "$PLAYBOOK_MODEL"\${PLAYBOOK_VARIANT:+ --variant "$PLAYBOOK_VARIANT"}${continued ? ' --continue' : ''} "$PLAYBOOK_PROMPT"`;
+}
+
+/** The variables of a message that give the harness its permissions and, with tools, the MCP server of the studio. */
+export function chatConfig(engine: 'claude-code' | 'opencode', tools: { list: ChatTool[]; url: string; token: string } | undefined): Record<string, string> {
+    const environment = tools ? { PLAYBOOK_TOOLS: JSON.stringify(tools.list), PLAYBOOK_TOOLS_URL: tools.url, PLAYBOOK_TOOLS_TOKEN: tools.token } : undefined;
+    if (engine === 'claude-code') {
+        return environment ? { PLAYBOOK_MCP: JSON.stringify({ mcpServers: { studio: { command: 'node', args: [MCP_SCRIPT], env: environment } } }) } : {};
+    }
+    return {
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+            permission: { edit: 'deny', bash: 'deny' },
+            ...(environment ? { mcp: { studio: { type: 'local', command: ['node', MCP_SCRIPT], environment } } } : {}),
+        }),
+    };
 }
 
 /** The colours and moves of a terminal, out of a text. */
@@ -137,7 +168,22 @@ export function chatReader(engine: 'claude-code' | 'opencode', emit: (event: Cha
     };
 }
 
-type Chat = { id: string; name: string; repository: string; container: string; messages: number; busy: boolean; lastActive: number };
+type Chat = {
+    id: string;
+    name: string;
+    repository: string;
+    container: string;
+    messages: number;
+    busy: boolean;
+    lastActive: number;
+    /** The tools of the studio for it, and the token its MCP server calls back with. */
+    tools: ChatTool[];
+    token: string;
+    /** Where the events of the message being answered go; none between messages. */
+    emit?: (event: ChatEvent) => void;
+    /** The calls of tools waiting for the studio. */
+    calls: Map<string, (answer: { result?: unknown; isError?: boolean }) => void>;
+};
 
 export type ChatDeps = {
     company: string;
@@ -149,6 +195,19 @@ export type ChatDeps = {
     keys: () => { env: Record<string, string>; accounts: Record<string, Array<{ id: string; label?: string }>> };
     log: (line: string, details?: Record<string, unknown>) => void;
     now?: () => number;
+    /** Where the MCP server of a chat calls the dispatcher back, from the container; none: no tools. */
+    toolsUrl?: (chatId: string) => string;
+};
+
+/** The tools of the studio as it gives them: a few, named plainly, small. */
+const toolsOf = (value: unknown): ChatTool[] => {
+    if (!Array.isArray(value) || value.length > 40 || JSON.stringify(value).length > 100_000) return [];
+    return value.flatMap((tool) => {
+        const entry = tool as Partial<ChatTool>;
+        return typeof entry?.name === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(entry.name) && typeof entry.description === 'string' && entry.inputSchema && typeof entry.inputSchema === 'object'
+            ? [{ name: entry.name, description: entry.description.slice(0, 2000), inputSchema: entry.inputSchema }]
+            : [];
+    });
 };
 
 export class ChatError extends Error {
@@ -171,7 +230,7 @@ export class ServerChats {
     }
 
     /** A chat of the repository: its container started and the repository cloned there (read only). */
-    async start(id: string, repository: string): Promise<{ id: string }> {
+    async start(id: string, repository: string, tools?: unknown): Promise<{ id: string }> {
         if (!CHAT_ID.test(id) || !/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repository)) throw new ChatError('invalid', 400);
         if (this.chats.has(id)) return { id };
         const container = `playbook-chat-${this.deps.company}-${id}`;
@@ -184,7 +243,7 @@ export class ServerChats {
             this.deps.log('chat could not clone', { chat: id, repository, output: output.slice(-300) });
             throw new ChatError('clone', 502);
         }
-        this.chats.set(id, { id, name: id, repository, container, messages: 0, busy: false, lastActive: this.now() });
+        this.chats.set(id, { id, name: id, repository, container, messages: 0, busy: false, lastActive: this.now(), tools: this.deps.toolsUrl ? toolsOf(tools) : [], token: randomBytes(24).toString('hex'), calls: new Map() });
         this.deps.log('chat started', { chat: id, repository });
         return { id };
     }
@@ -206,11 +265,13 @@ export class ServerChats {
         const candidate: Candidate = { provider: model.provider, model: model.model, ...(model.variant ? { variant: model.variant } : {}), name: model.name ?? model.model, account };
         const keys = candidateEnv(candidate, undefined, env);
         chat.busy = true;
+        chat.emit = emit;
         chat.lastActive = this.now();
         let tail = '';
         const reader = chatReader(engine, emit);
+        const tools = chat.tools.length && this.deps.toolsUrl ? { list: chat.tools, url: this.deps.toolsUrl(chat.id), token: chat.token } : undefined;
         try {
-            const code = await this.deps.host.exec(chat.container, chatScript(engine, chat.messages > 0), { ...keys, PLAYBOOK_PROMPT: text }, (chunk) => {
+            const code = await this.deps.host.exec(chat.container, chatScript(engine, chat.messages > 0, !!tools), { ...keys, ...chatConfig(engine, tools), PLAYBOOK_PROMPT: text }, (chunk) => {
                 tail = (tail + chunk).slice(-4000);
                 reader.push(chunk);
             });
@@ -218,8 +279,49 @@ export class ServerChats {
             chat.messages += 1;
         } finally {
             chat.busy = false;
+            chat.emit = undefined;
+            // The calls still waiting end with the message.
+            for (const answer of chat.calls.values()) answer({ result: 'The message ended before the studio answered.', isError: true });
+            chat.calls.clear();
             chat.lastActive = this.now();
         }
+    }
+
+    /**
+     * A call of a tool of the studio by the harness of a chat (its MCP server, with the token of the chat): sent
+     * to the studio with the reply being written, answered when the studio says what it gave.
+     */
+    async callTool(id: string, token: string, name: string, input: Record<string, unknown>): Promise<{ result?: unknown; isError?: boolean }> {
+        const chat = this.chats.get(id);
+        const expected = Buffer.from(chat?.token ?? '');
+        const given = Buffer.from(token);
+        if (!chat || expected.length !== given.length || !timingSafeEqual(expected, given)) throw new ChatError('bad token', 401);
+        if (!chat.tools.some((tool) => tool.name === name)) throw new ChatError('unknown tool', 404);
+        if (!chat.emit) throw new ChatError('no message', 409);
+        const callId = randomBytes(6).toString('hex');
+        const answered = new Promise<{ result?: unknown; isError?: boolean }>((resolve) => {
+            const timer = setTimeout(() => {
+                chat.calls.delete(callId);
+                resolve({ result: 'The studio did not answer in time.', isError: true });
+            }, TOOL_CALL_TIMEOUT_MS);
+            chat.calls.set(callId, (answer) => {
+                clearTimeout(timer);
+                chat.calls.delete(callId);
+                resolve(answer);
+            });
+        });
+        chat.lastActive = this.now();
+        chat.emit({ type: 'tool-call', id: callId, name, input });
+        this.deps.log('chat tool called', { chat: id, tool: name });
+        return answered;
+    }
+
+    /** What the studio gave for a call of a tool; false when no call waits with that id. */
+    answerTool(id: string, callId: string, answer: { result?: unknown; isError?: boolean }): boolean {
+        const resolve = this.chats.get(id)?.calls.get(callId);
+        if (!resolve) return false;
+        resolve(answer);
+        return true;
     }
 
     async close(id: string): Promise<boolean> {

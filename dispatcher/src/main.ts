@@ -50,6 +50,8 @@ async function main() {
         },
         stats: (names) => containerStats(names),
         designHost: (config) => designHost({ memory: machine.design.memory, network, owner: `app-${config.appId}` }),
+        // The chats join the same network and call the tools of the studio back here, by the name of this container.
+        ...(network ? { chatNetwork: { network, address: `http://${hostname()}:${machine.port}` } } : {}),
         designSlots: slots,
         designKits: Object.fromEntries(kits.map((kit) => [kit.kit, { image: kit.image, command: kit.command }])),
     }, legacy ? [legacy] : []);
