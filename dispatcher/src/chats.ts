@@ -259,6 +259,9 @@ export class ServerChats {
         if (!CHAT_ID.test(id) || !/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repository)) throw new ChatError('invalid', 400);
         if (this.chats.has(id)) return { id };
         const container = `playbook-chat-${this.deps.company}-${id}`;
+        // One left by a dispatcher before this one (an update, a restart) under the same name: gone first, or Docker
+        // refuses the new one. Its conversation is not lost: the studio sends the chat again from its start.
+        await this.deps.host.remove(container).catch(() => undefined);
         await this.deps.host.start(container, this.deps.image, this.deps.owner);
         const token = await this.deps.github.turnToken(repository, { metadata: 'read', contents: 'read' });
         let output = '';
