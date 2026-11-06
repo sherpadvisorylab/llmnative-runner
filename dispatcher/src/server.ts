@@ -241,6 +241,9 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                         if (!tenant.chats.has(id, String(body.repository ?? ''))) return send(response, 404, { error: 'no-chat' });
                         if (typeof model?.provider !== 'string' || typeof model.model !== 'string') return send(response, 400, { error: 'invalid' });
                         response.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no' });
+                        // A line every 15 s while the harness thinks or waits for a tool: a reply silent for minutes
+                        // would be cut by what is in between (the fetch of the studio stops after 5 minutes without data).
+                        const alive = setInterval(() => response.write(`${JSON.stringify({ type: 'ping' })}\n`), 15_000);
                         await tenant.chats.send(id, String(body.text ?? ''), {
                             provider: model.provider,
                             model: model.model,
@@ -249,6 +252,7 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                         }, (event) => response.write(`${JSON.stringify(event)}\n`)).catch((error: Error & { status?: number }) => {
                             response.write(`${JSON.stringify({ type: 'error', message: error.message })}\n`);
                         });
+                        clearInterval(alive);
                         response.end();
                         return;
                     }
