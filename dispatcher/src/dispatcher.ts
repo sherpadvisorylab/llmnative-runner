@@ -105,6 +105,8 @@ const SPEC_MAX = 50_000;
 const MARKER = (data: object) => `<!-- playbook ${JSON.stringify(data)} -->`;
 /** When GitHub has not yet worked out whether a pull request merges: looked at again after this. */
 const CONFLICTS_AGAIN_MS = 60_000;
+/** The tries of a turn on accounts that run out of credit, before it goes to a person. */
+const MAX_CREDIT_TRIES = 6;
 /** While an item waits at the CI gate, its repository is looked at again after this. */
 const GATE_AGAIN_MS = 60_000;
 export const issueKey = (repository: string, number: number) => `${repository}#${number}`;
@@ -372,18 +374,28 @@ export class Dispatcher {
                 await this.failed(workflow, repository, number, agent, 0, '', reason, exhausted.length > 0);
                 return;
             }
-            for (const [index, chosen] of tries.entries()) {
+            // The accounts with credit are read again after each one runs out: a turn lasts minutes, and an account
+            // that ran out earlier may have its credit back meanwhile (its reset passed). At most a few tries a turn.
+            const tried: ModelCandidate[] = [];
+            for (let chosen: ModelCandidate | undefined = tries[0], round = 0; ; round += 1) {
                 const attempt = await this.attempt(workflow, repository, number, agent, chosen, keys.env);
                 const until = chosen && !attempt.moved ? outOfCredit(attempt.output, this.now()) : undefined;
                 if (chosen && until !== undefined) {
                     // Out of credit: this account skipped until it may have some again, the turn goes on with the next
                     // (the next account of the provider, else the next provider).
                     this.exhausted.set(accountKey(chosen.provider, chosen.account), until);
+                    tried.push(chosen);
                     const at = new Date(until).toISOString();
                     this.log('provider out of credit', { issue: key, agent, provider: chosen.provider, account: chosen.account.id, until: at });
                     this.announce({ type: 'provider-exhausted', at: this.at(), repository, issue: number, agent, provider: chosen.provider, account: chosen.account.id, until: at });
-                    if (index < tries.length - 1) continue;
-                    await this.failed(workflow, repository, number, agent, attempt.code, attempt.output, `every provider of its models is out of credit for now (${tries.map((tried) => candidateName(tried!)).filter((name, at, all) => all.indexOf(name) === at).join(', ')})`, true);
+                    const next = settings.models && round < MAX_CREDIT_TRIES - 1
+                        ? candidates(settings.models, connectedAccounts(keys.env, keys.accounts), this.options.providerOrder, (account) => this.isExhausted(account))[0]
+                        : undefined;
+                    if (next) {
+                        chosen = next;
+                        continue;
+                    }
+                    await this.failed(workflow, repository, number, agent, attempt.code, attempt.output, `every provider of its models is out of credit for now (${tried.map((one) => candidateName(one)).filter((name, at, all) => all.indexOf(name) === at).join(', ')})`, true);
                 } else if (attempt.moved) this.failures.set(key, 0);
                 else await this.failed(workflow, repository, number, agent, attempt.code, attempt.output);
                 // What it cost, on the comment of the turn (its exit, or its failure): kept with the issue.
