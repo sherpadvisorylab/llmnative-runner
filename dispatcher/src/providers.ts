@@ -107,7 +107,7 @@ const OUT_OF_CREDIT = [
     /payment required/i,
     /out of (?:credits?|tokens)/i,
     /(?:usage|monthly|weekly|daily|session|5-hour|five-hour) limit (?:reached|exceeded|hit)/i,
-    /you(?:'ve| have) (?:hit|reached) your (?:usage |session |weekly )?limit/i,
+    /you(?:'ve| have) (?:hit|reached) your (?:usage |session |weekly |daily |monthly |5-hour |five-hour )?limit/i,
     /claude ai usage limit reached/i,
 ];
 
@@ -126,8 +126,18 @@ export function outOfCredit(output: string, now: number): number | undefined {
 
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 
-/** "resets Nov 8, 6pm (UTC)", "resets Nov 8, 6:30pm (UTC)": when, in the year to come (never in the past). */
+/**
+ * "resets Nov 8, 6pm (UTC)", "resets Nov 8, 6:30pm (UTC)": when, in the year to come (never in the past);
+ * "resets 3:20am (UTC)" (the limit of five hours): that time, today or tomorrow.
+ */
 function resetInWords(tail: string, now: number): number | undefined {
+    const hourOnly = /resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(UTC\)/i.exec(tail);
+    if (hourOnly) {
+        const day = new Date(now);
+        const hour = (Number(hourOnly[1]) % 12) + (hourOnly[3].toLowerCase() === 'pm' ? 12 : 0);
+        const at = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), hour, Number(hourOnly[2] ?? 0));
+        return at > now ? at : at + 24 * 60 * 60_000;
+    }
     const match = /resets\s+([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(UTC\)/i.exec(tail);
     if (!match) return undefined;
     const month = MONTHS.indexOf(match[1].toLowerCase());

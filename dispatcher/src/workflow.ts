@@ -17,6 +17,8 @@ export interface Workflow {
     statusPrefix: string;
     human: string;
     blocked: string;
+    /** Where work that stopped goes (time, failures, credit): Interrupted; none (an older package): the block. */
+    interrupted?: string;
     /** `opensPullRequests`: it waits while another CR of the repository has its pull request open. */
     /**
      * `effort`: how much it reasons. `models` (§8.6): its models, first the preferred, each with the providers

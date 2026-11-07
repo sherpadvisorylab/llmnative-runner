@@ -369,7 +369,7 @@ export class Dispatcher {
                     ? `the providers of its models are out of credit for now (${exhausted.join(', ')})`
                     : `no provider of the organization serves its models (${settings.models!.map((model) => model.name).join(', ')}): connect one in Brain → Models`;
                 this.log('turn has no provider', { issue: key, agent, reason });
-                await this.failed(workflow, repository, number, agent, 0, '', reason);
+                await this.failed(workflow, repository, number, agent, 0, '', reason, exhausted.length > 0);
                 return;
             }
             for (const [index, chosen] of tries.entries()) {
@@ -383,7 +383,7 @@ export class Dispatcher {
                     this.log('provider out of credit', { issue: key, agent, provider: chosen.provider, account: chosen.account.id, until: at });
                     this.announce({ type: 'provider-exhausted', at: this.at(), repository, issue: number, agent, provider: chosen.provider, account: chosen.account.id, until: at });
                     if (index < tries.length - 1) continue;
-                    await this.failed(workflow, repository, number, agent, attempt.code, attempt.output, `every provider of its models is out of credit for now (${tries.map((tried) => candidateName(tried!)).filter((name, at, all) => all.indexOf(name) === at).join(', ')})`);
+                    await this.failed(workflow, repository, number, agent, attempt.code, attempt.output, `every provider of its models is out of credit for now (${tries.map((tried) => candidateName(tried!)).filter((name, at, all) => all.indexOf(name) === at).join(', ')})`, true);
                 } else if (attempt.moved) this.failures.set(key, 0);
                 else await this.failed(workflow, repository, number, agent, attempt.code, attempt.output);
                 // What it cost, on the comment of the turn (its exit, or its failure): kept with the issue.
@@ -464,14 +464,16 @@ export class Dispatcher {
     }
 
     /** A turn that left the issue where it was: a comment, and past the limit a person takes it. */
-    private async failed(workflow: Workflow, repository: string, number: number, agent: string, code: number, output: string, reason?: string): Promise<void> {
+    private async failed(workflow: Workflow, repository: string, number: number, agent: string, code: number, output: string, reason?: string, credit = false): Promise<void> {
         const key = issueKey(repository, number);
         const failures = this.failures.get(key) + 1;
         const why = reason ?? (code === 124 ? 'it ran out of time' : code === 0 ? 'it ended without leaving the issue' : `it stopped with exit code ${code}`);
         const tail = output.trim().split('\n').slice(-15).join('\n');
         const name = workflow.agents[agent]?.name ?? agent;
         const base = `/repos/${repository}/issues/${number}`;
-        if (failures < this.options.failuresToBlock) {
+        // Why the work stopped: a turn out of time is not run again (it would run out again), nor one without credit.
+        const kind = credit ? 'credit' : code === 124 ? 'timeout' : 'error';
+        if (failures < this.options.failuresToBlock && kind === 'error') {
             this.failures.set(key, failures);
             await this.github.request('POST', `${base}/comments`, {
                 body: `${MARKER({ event: 'turn-failed', agent })}\nThe turn of **${name}** failed: ${why}. It runs again (${failures}/${this.options.failuresToBlock}).\n\n\`\`\`\n${tail}\n\`\`\``,
@@ -479,13 +481,16 @@ export class Dispatcher {
             return;
         }
         this.failures.set(key, 0);
-        const { names } = workOf(workflow, (await this.github.request<Issue>('GET', base)).labels);
+        const { names, status: before } = workOf(workflow, (await this.github.request<Issue>('GET', base)).labels);
         for (const label of names.filter((name) => name.startsWith(workflow.needsPrefix) || name.startsWith(workflow.statusPrefix))) {
             await this.github.request('DELETE', `${base}/labels/${encodeURIComponent(label)}`).catch(() => undefined);
         }
-        await this.github.request('POST', `${base}/labels`, { labels: [workflow.needsPrefix + workflow.human, workflow.statusPrefix + workflow.blocked] });
+        // Interrupted (nobody asked anything): what it was with whom, so a person runs it again as it was.
+        const status = workflow.interrupted ?? workflow.blocked;
+        await this.github.request('POST', `${base}/labels`, { labels: [workflow.needsPrefix + workflow.human, workflow.statusPrefix + status] });
+        const said = kind === 'error' ? `${failures} turns of **${name}** failed in a row, the last because ${why}` : `the turn of **${name}** stopped: ${why}`;
         await this.github.request('POST', `${base}/comments`, {
-            body: `${MARKER({ event: 'limit', agent: 'dispatcher', of: agent })}\n**Dispatcher** → **Human** · ${workflow.statusPrefix}${workflow.blocked} · ${failures} turns of **${name}** failed in a row, the last because ${why}. A person looks at it, then hands it back with \`${workflow.needsPrefix}${agent}\`.\n\n\`\`\`\n${tail}\n\`\`\``,
+            body: `${MARKER({ event: 'limit', agent: 'dispatcher', of: agent, reason: kind, ...(before ? { was: before } : {}) })}\n**Dispatcher** → **Human** · ${workflow.statusPrefix}${status} · ${said}. A person looks at it, then runs it again (hands it back with \`${workflow.needsPrefix}${agent}\`).\n\n\`\`\`\n${tail}\n\`\`\``,
         });
         this.log('issue handed to a person', { issue: key, agent, failures });
         this.announce({ type: 'handed', at: this.at(), repository, issue: number, agent, failures });
