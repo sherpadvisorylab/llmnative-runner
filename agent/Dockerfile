@@ -1,6 +1,10 @@
 # The image of a Playbook agent: one container per turn, started by the dispatcher, removed at the end.
 # It clones the repository (or uses one mounted at /work/repo), checks that the agent exists in the
 # workflow package and runs it with opencode, without interaction. See docs/runner-setup.md.
+# Java for the emulators of Firebase (Firestore, Storage, Auth) and the other tools of a project that need it:
+# the agents ran the tests downloading a JDK at every turn.
+FROM eclipse-temurin:21-jre AS java
+
 FROM node:24-bookworm-slim
 
 # opencode at a fixed version: a new one is adopted on purpose, by changing it here.
@@ -13,6 +17,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g "opencode-ai@${OPENCODE_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force
+
+COPY --from=java /opt/java/openjdk /opt/java/openjdk
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 # Not root: the agent works in /work with its own user.
 RUN useradd --create-home --uid 10001 agent && mkdir -p /work && chown agent:agent /work
