@@ -73,6 +73,9 @@ if [[ "${PLAYBOOK_ENGINE:-opencode}" == "claude-code" ]]; then
     fi
     unset ANTHROPIC_API_KEY
     export DISABLE_AUTOUPDATER=1
+    # A command runs in the foreground up to ten minutes (installs, tests with emulators, verify): with the two
+    # minutes of Claude Code by default they went to the background and the agent waited for them in loops.
+    export BASH_DEFAULT_TIMEOUT_MS=600000 BASH_MAX_TIMEOUT_MS=900000
     args=(-p --agent "$agent" --output-format stream-json --verbose --dangerously-skip-permissions)
     [[ -n "${PLAYBOOK_EFFORT:-}" ]] && args+=(--effort "$PLAYBOOK_EFFORT")
     [[ -n "${PLAYBOOK_MODEL:-}" ]] && args+=(--model "$PLAYBOOK_MODEL")

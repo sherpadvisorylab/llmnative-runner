@@ -102,7 +102,7 @@ export function toolKind(name, input = {}) {
     if (/playbook\.mjs\s+\w/.test(command)) return 'workflow';
     if (/\b(npm|pnpm|yarn)\s+(ci|install|i)\b/.test(command)) return 'install';
     if (/\b(npm|pnpm|yarn)\s+(run\s+)?test\b|node\s+--test|emulators:exec|vitest|jest|mocha/.test(command)) return 'tests';
-    if (/^\s*(sleep|until|while)\b|tail\s+--pid/.test(command)) return 'waiting';
+    if (/^\s*(sleep|until|while)\b|tail\s+--pid|\bfor\b[^;]*;\s*do\b[\s\S]*\bsleep\s+\d/.test(command)) return 'waiting';
     if (/\bgit\s+(commit|push)\b/.test(command)) return 'write';
     if (/\bgit\s+(show|diff|log|grep|ls-files|fetch|status)\b|^\s*(cat|sed|head|tail|grep|ls|find|wc)\b/.test(command)) return 'read';
     return 'other';
