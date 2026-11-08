@@ -41,8 +41,16 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop()
     const file = process.env.CLAUDE_STREAM_FILE || CLAUDE_STREAM_FILE;
     const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
     lines.on('line', (line) => {
+        // Each event with the moment it came: the timing of the turn (usage.mjs) reads where the time went.
+        let kept = line;
         try {
-            appendFileSync(file, `${line}\n`);
+            const event = JSON.parse(line);
+            if (event && typeof event === 'object') kept = JSON.stringify({ ...event, _at: Date.now() });
+        } catch {
+            // Not an event: kept as it is.
+        }
+        try {
+            appendFileSync(file, `${kept}\n`);
         } catch {
             // The usage only: the turn goes on.
         }

@@ -9,7 +9,26 @@ import type { GitHubApi } from './github.ts';
  * `github`: the requests the command of the workflow made to GitHub in the turn. `contextStart` and
  * `contextEnd`: the tokens the model read for the first and for the last reply of the turn.
  */
-export type TurnUsage = { model?: string; provider?: string; input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; cost: number; replies: number; seconds?: number; github?: number; contextStart?: number; contextEnd?: number };
+export type TurnUsage = { model?: string; provider?: string; input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; cost: number; replies: number; seconds?: number; github?: number; contextStart?: number; contextEnd?: number; timing?: TurnTiming };
+
+/**
+ * Where the time of a turn went (runner 0.48): the setup of the container to the start of the agent, the model
+ * (thinking and writing) and the tools by kind, each [calls, seconds]: web, memoryRead, memoryWrite, verify,
+ * mutate, workflow, install, tests, read, write, waiting, other.
+ */
+export type TurnTiming = { setup?: number; model: number; tools: Record<string, [number, number]> };
+
+const minutesOf = (seconds: number) => (seconds >= 60 ? `${Math.round(seconds / 60)} min` : `${Math.round(seconds)}s`);
+
+/** The time of a turn in one phrase: the setup, the model, then the tools that took most. */
+export function timingText(timing: TurnTiming): string {
+    const tools = Object.entries(timing.tools).sort((a, b) => b[1][1] - a[1][1]).filter(([, [, seconds]]) => seconds >= 5).slice(0, 5);
+    return [
+        ...(timing.setup !== undefined ? [`setup ${minutesOf(timing.setup)}`] : []),
+        `model ${minutesOf(timing.model)}`,
+        ...tools.map(([kind, [calls, seconds]]) => `${kind} ${minutesOf(seconds)}${calls > 1 ? ` (${calls}×)` : ''}`),
+    ].join(', ');
+}
 
 const LINES = /^\[playbook-agent\] usage (\{.*\})\s*$/gm;
 const MOVE = /<!-- playbook (\{[^\n]*?\}) -->/;
@@ -42,6 +61,7 @@ export function usageNote(usage: TurnUsage): string {
         `$${usage.cost.toFixed(4)}`,
         ...(usage.github ? [`${usage.github} GitHub`] : []),
         ...(usage.contextStart && usage.contextEnd ? [`context ${thousands(usage.contextStart)} → ${thousands(usage.contextEnd)}`] : []),
+        ...(usage.timing ? [timingText(usage.timing)] : []),
     ];
     return `<!-- playbook-usage ${JSON.stringify(usage)} -->\n<sub>${parts.join(' · ')}</sub>`;
 }

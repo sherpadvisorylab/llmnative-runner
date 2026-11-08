@@ -15,6 +15,9 @@
 # Exit codes: 0 done; 64 wrong settings or unknown agent; 65 clone failed; 124 timeout; others from opencode.
 set -euo pipefail
 
+# When the container started (ms): the setup of the turn is the time to the start of the agent.
+export PLAYBOOK_STARTED_MS="$(date +%s%3N)"
+
 say() { printf '[playbook-agent] %s\n' "$*" >&2; }
 
 agent="${PLAYBOOK_AGENT:-}"
@@ -75,6 +78,7 @@ if [[ "${PLAYBOOK_ENGINE:-opencode}" == "claude-code" ]]; then
     [[ -n "${PLAYBOOK_MODEL:-}" ]] && args+=(--model "$PLAYBOOK_MODEL")
     say "agent ${agent}${PLAYBOOK_ISSUE:+ on issue #${PLAYBOOK_ISSUE}} with Claude Code${PLAYBOOK_MODEL:+ and ${PLAYBOOK_MODEL}}${PLAYBOOK_EFFORT:+ (effort ${PLAYBOOK_EFFORT})}"
     set +e
+    export PLAYBOOK_AGENT_MS="$(date +%s%3N)"
     timeout --signal=TERM --kill-after=30 "${PLAYBOOK_TIMEOUT:-3600}" claude "${args[@]}" "$prompt" | node /usr/local/lib/playbook/claude-stream.mjs
     code=${PIPESTATUS[0]}
     timeout 90 node /usr/local/lib/playbook/usage.mjs 2>/dev/null || true

@@ -87,6 +87,78 @@ export function claudeUsageOf(text) {
     };
 }
 
+/** The kind of work a tool call is, from its name and its command: what the timing of a turn sums. */
+export function toolKind(name, input = {}) {
+    const command = String(input.command ?? '');
+    if (/^(WebSearch|WebFetch)$/.test(name)) return 'web';
+    if (/memory_search/.test(name) || /memory\.mjs\s+search/.test(command)) return 'memoryRead';
+    if (/memory_propose/.test(name) || /memory\.mjs\s+propose/.test(command)) return 'memoryWrite';
+    if (/^(Read|Grep|Glob|NotebookRead)$/.test(name)) return 'read';
+    if (/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(name)) return 'write';
+    if (/^(Monitor|TaskOutput|BashOutput)$/.test(name)) return 'waiting';
+    if (name !== 'Bash') return 'other';
+    if (/playbook\.mjs\s+verify\b/.test(command)) return 'verify';
+    if (/playbook\.mjs\s+mutate\b/.test(command)) return 'mutate';
+    if (/playbook\.mjs\s+\w/.test(command)) return 'workflow';
+    if (/\b(npm|pnpm|yarn)\s+(ci|install|i)\b/.test(command)) return 'install';
+    if (/\b(npm|pnpm|yarn)\s+(run\s+)?test\b|node\s+--test|emulators:exec|vitest|jest|mocha/.test(command)) return 'tests';
+    if (/^\s*(sleep|until|while)\b|tail\s+--pid/.test(command)) return 'waiting';
+    if (/\bgit\s+(commit|push)\b/.test(command)) return 'write';
+    if (/\bgit\s+(show|diff|log|grep|ls-files|fetch|status)\b|^\s*(cat|sed|head|tail|grep|ls|find|wc)\b/.test(command)) return 'read';
+    return 'other';
+}
+
+/**
+ * Where the time of a turn run by Claude Code went, from its events stamped by claude-stream.mjs: the setup of
+ * the container (start to the agent), the tools by kind (count and seconds, from a call to its result) and the
+ * model (the rest: thinking and writing). Null when the events have no moments.
+ */
+export function timingOf(text, startedMs, agentMs) {
+    const events = String(text ?? '').split(/\r?\n/).flatMap((line) => {
+        try {
+            const event = line.trim() ? JSON.parse(line) : null;
+            return event && typeof event._at === 'number' ? [event] : [];
+        } catch {
+            return [];
+        }
+    });
+    if (!events.length) return null;
+    const calls = new Map();
+    const intervals = [];
+    const tools = {};
+    for (const event of events) {
+        for (const part of event.message?.content ?? []) {
+            if (event.type === 'assistant' && part.type === 'tool_use') calls.set(part.id, { kind: toolKind(part.name, part.input), at: event._at });
+            if (event.type === 'user' && part.type === 'tool_result' && calls.has(part.tool_use_id)) {
+                const call = calls.get(part.tool_use_id);
+                calls.delete(part.tool_use_id);
+                const seconds = Math.max(0, (event._at - call.at) / 1000);
+                const sum = tools[call.kind] ?? [0, 0];
+                tools[call.kind] = [sum[0] + 1, Math.round((sum[1] + seconds) * 10) / 10];
+                intervals.push([call.at, event._at]);
+            }
+        }
+    }
+    // The tools may run side by side: their time is the union of their spans, the model has the rest.
+    intervals.sort((a, b) => a[0] - b[0]);
+    let busy = 0;
+    let end = -Infinity;
+    for (const [from, to] of intervals) {
+        if (from > end) {
+            busy += to - from;
+            end = to;
+        } else if (to > end) {
+            busy += to - end;
+            end = to;
+        }
+    }
+    const first = events[0]._at;
+    const last = events.at(-1)._at;
+    const round = (ms) => Math.round(ms / 100) / 10;
+    const setup = Number(agentMs) > 0 && Number(startedMs) > 0 ? round(Number(agentMs) - Number(startedMs)) : undefined;
+    return { ...(setup !== undefined ? { setup } : {}), model: round(Math.max(0, last - first - busy)), tools };
+}
+
 /**
  * The export of a session, through a file: written to a pipe, opencode stops at 64 KB and the JSON of a
  * long turn comes cut (only short sessions read whole).
@@ -107,7 +179,10 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop()
         // Run by Claude Code: its events; else the last session of opencode.
         let usage = null;
         if (process.env.PLAYBOOK_ENGINE === 'claude-code') {
-            usage = claudeUsageOf(readFileSync(process.env.CLAUDE_STREAM_FILE || '/tmp/claude-turn.jsonl', 'utf8'));
+            const stream = readFileSync(process.env.CLAUDE_STREAM_FILE || '/tmp/claude-turn.jsonl', 'utf8');
+            usage = claudeUsageOf(stream);
+            const timing = usage ? timingOf(stream, process.env.PLAYBOOK_STARTED_MS, process.env.PLAYBOOK_AGENT_MS) : null;
+            if (timing) usage = { ...usage, timing };
         } else {
             const sessions = jsonOf(opencode(['session', 'list', '--max-count', '1', '--format', 'json']));
             const id = (Array.isArray(sessions) ? sessions[0] : sessions)?.id;
