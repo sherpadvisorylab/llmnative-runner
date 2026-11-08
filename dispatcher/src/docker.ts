@@ -86,6 +86,9 @@ export async function containerStats(names: string[], command = 'docker'): Promi
     return stats;
 }
 
+/** The volume of the npm cache of an organization: its owner as a name docker takes. */
+export const npmCacheVolume = (owner: string) => `playbook-npm-${owner.toLowerCase().replace(/[^a-z0-9_.-]+/g, '-')}`;
+
 export function dockerRunner(options: DockerOptions): { runTurn: RunTurn; cleanUp(): Promise<void> } {
     const command = options.docker ?? 'docker';
     return {
@@ -95,6 +98,9 @@ export function dockerRunner(options: DockerOptions): { runTurn: RunTurn; cleanU
                 ...(options.memory ? ['--memory', options.memory] : []),
                 ...(options.cpus ? ['--cpus', String(options.cpus)] : []),
                 ...(options.network ? ['--network', options.network] : []),
+                // The packages npm downloaded in the turns before, kept for the next: an install takes seconds,
+                // not minutes. One volume per organization (its App): what one downloads, another never reads.
+                '-v', `${npmCacheVolume(options.owner)}:/home/agent/.npm`,
                 ...Object.keys(spec.env).flatMap((name) => ['-e', name]),
                 options.image,
             ];

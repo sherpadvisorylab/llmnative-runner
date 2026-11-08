@@ -17,6 +17,8 @@ set -euo pipefail
 
 # When the container started (ms): the setup of the turn is the time to the start of the agent.
 export PLAYBOOK_STARTED_MS="$(date +%s%3N)"
+# npm reads the packages from its cache first (a volume of the organization kept from turn to turn).
+export npm_config_prefer_offline=true npm_config_audit=false npm_config_fund=false
 
 say() { printf '[playbook-agent] %s\n' "$*" >&2; }
 

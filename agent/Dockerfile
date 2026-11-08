@@ -24,6 +24,8 @@ ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 # Not root: the agent works in /work with its own user.
 RUN useradd --create-home --uid 10001 agent && mkdir -p /work && chown agent:agent /work
+# The cache of npm: a volume of the organization keeps it from turn to turn (its owner taken from here).
+RUN mkdir -p /home/agent/.npm && chown agent:agent /home/agent/.npm
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/playbook-agent
 RUN mkdir -p /usr/local/lib/playbook && chmod 0755 /usr/local/lib/playbook
 COPY --chmod=0644 usage.mjs /usr/local/lib/playbook/usage.mjs
