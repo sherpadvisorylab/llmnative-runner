@@ -133,6 +133,8 @@ export class Dispatcher {
     private readonly gatesAgain = new Set<string>();
     /** The accounts of providers out of credit (`provider#account`), until when they are skipped (ms). */
     private readonly exhausted = new Map<string, number>();
+    /** The issues waiting with their agent for an account with credit, until when (ms): they run again by themselves then. */
+    private readonly waitingCredit = new Map<string, number>();
     lastReconcile?: string;
 
     private readonly sizes?: SizeStore;
@@ -267,6 +269,8 @@ export class Dispatcher {
     }
 
     private async candidate(repository: string, number: number, fresh: boolean): Promise<Candidate | null> {
+        // Waiting for credit: not before the first reset (the reconciliation brings it back then).
+        if ((this.waitingCredit.get(issueKey(repository, number)) ?? 0) > this.now()) return null;
         const workflow = await this.workflowOf(repository, fresh);
         if (!workflow || workflow.paused) return null;
         const issue = await this.github.request<Issue>('GET', `/repos/${repository}/issues/${number}`);
@@ -371,7 +375,8 @@ export class Dispatcher {
                     ? `the providers of its models are out of credit for now (${exhausted.join(', ')})`
                     : `no provider of the organization serves its models (${settings.models!.map((model) => model.name).join(', ')}): connect one in Brain → Models`;
                 this.log('turn has no provider', { issue: key, agent, reason });
-                await this.failed(workflow, repository, number, agent, 0, '', reason, exhausted.length > 0);
+                if (exhausted.length) await this.waitForCredit(workflow, repository, number, agent, reason, '');
+                else await this.failed(workflow, repository, number, agent, 0, '', reason);
                 return;
             }
             // The accounts with credit are read again after each one runs out: a turn lasts minutes, and an account
@@ -395,8 +400,11 @@ export class Dispatcher {
                         chosen = next;
                         continue;
                     }
-                    await this.failed(workflow, repository, number, agent, attempt.code, attempt.output, `every provider of its models is out of credit for now (${tried.map((one) => candidateName(one)).filter((name, at, all) => all.indexOf(name) === at).join(', ')})`, true);
-                } else if (attempt.moved) this.failures.set(key, 0);
+                    await this.waitForCredit(workflow, repository, number, agent, `every provider of its models is out of credit for now (${tried.map((one) => candidateName(one)).filter((name, at, all) => all.indexOf(name) === at).join(', ')})`, attempt.output);
+                } else if (attempt.moved) {
+                    this.failures.set(key, 0);
+                    this.waitingCredit.delete(key);
+                }
                 else await this.failed(workflow, repository, number, agent, attempt.code, attempt.output);
                 // What it cost, on the comment of the turn (its exit, or its failure): kept with the issue.
                 if (attempt.usage) {
@@ -476,6 +484,39 @@ export class Dispatcher {
     }
 
     /** A turn that left the issue where it was: a comment, and past the limit a person takes it. */
+    /**
+     * No account with credit for the agent: the issue stays with it, back to the status it received the work with,
+     * and runs again by itself once the first account may have credit (its reset), when the reconciliation comes by.
+     * Nobody has to retry it; it is said once, not at every try.
+     */
+    private async waitForCredit(workflow: Workflow, repository: string, number: number, agent: string, why: string, output: string): Promise<void> {
+        const key = issueKey(repository, number);
+        const resets = [...this.exhausted.values()].filter((until) => until > this.now());
+        const until = resets.length ? Math.min(...resets) : this.now() + 10 * 60_000;
+        const already = this.waitingCredit.has(key);
+        this.waitingCredit.set(key, until);
+        this.failures.set(key, 0);
+        if (already) return;
+        const base = `/repos/${repository}/issues/${number}`;
+        const issue = await this.github.request<Issue>('GET', base);
+        const { status } = workOf(workflow, issue.labels);
+        const last = Math.max(1, Math.ceil((typeof issue.comments === 'number' ? issue.comments : 0) / 100));
+        const comments = await this.github.request<IssueComment[]>('GET', `${base}/comments?per_page=100&page=${last}`).catch(() => [] as IssueComment[]);
+        const from = interruptedClaim(agent, comments)?.from;
+        if (from && from !== status) {
+            if (status) await this.github.request('DELETE', `${base}/labels/${encodeURIComponent(workflow.statusPrefix + status)}`).catch(() => undefined);
+            await this.github.request('POST', `${base}/labels`, { labels: [workflow.statusPrefix + from] });
+        }
+        const name = workflow.agents[agent]?.name ?? agent;
+        const at = new Date(until).toISOString();
+        const tail = output.trim().split('\n').slice(-6).join('\n');
+        await this.github.request('POST', `${base}/comments`, {
+            body: `${MARKER({ event: 'interrupted', agent, ...(from ? { status: from } : {}), reason: 'credit', until: at })}\nThe turn of **${name}** stopped: ${why}. It waits with ${name} and runs again by itself after ${at.slice(11, 16)} UTC, on the first account with credit.${tail ? `\n\n\`\`\`\n${tail}\n\`\`\`` : ''}`,
+        });
+        this.log('issue waits for credit', { issue: key, agent, until: at });
+        this.announce({ type: 'provider-exhausted', at: this.at(), repository, issue: number, agent, provider: 'all', account: '', until: at });
+    }
+
     private async failed(workflow: Workflow, repository: string, number: number, agent: string, code: number, output: string, reason?: string, credit = false): Promise<void> {
         const key = issueKey(repository, number);
         const failures = this.failures.get(key) + 1;
