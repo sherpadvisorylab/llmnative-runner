@@ -52,6 +52,17 @@ elif [[ ! -d "$repo" ]]; then
 fi
 cd "$repo"
 
+# The dependencies of the working copy, installed in the background while the agent reads its CR: for an agent
+# that opens pull requests (it runs the tests), when the tools of the workflow know how (prepare). The agent
+# waits for them with prepare --wait; brief tells it they are on their way.
+if grep -q "async function prepare" .playbook/playbook.mjs 2>/dev/null && node -e '
+    const agents = JSON.parse(require("fs").readFileSync(".playbook/dispatch.json", "utf8")).agents ?? {};
+    process.exit(Object.values(agents).some((item) => item.opencodeAgent === process.env.PLAYBOOK_AGENT && item.opensPullRequests) ? 0 : 1);
+' 2>/dev/null; then
+    say "installing the dependencies in the background"
+    (node .playbook/playbook.mjs prepare >/tmp/playbook-prepare.log 2>&1 &)
+fi
+
 prompt="${PLAYBOOK_PROMPT:-}"
 if [[ -z "$prompt" ]]; then
     if [[ -z "${PLAYBOOK_ISSUE:-}" ]]; then
@@ -78,7 +89,9 @@ if [[ "${PLAYBOOK_ENGINE:-opencode}" == "claude-code" ]]; then
     # A command runs in the foreground up to ten minutes (installs, tests with emulators, verify): with the two
     # minutes of Claude Code by default they went to the background and the agent waited for them in loops.
     export BASH_DEFAULT_TIMEOUT_MS=600000 BASH_MAX_TIMEOUT_MS=900000
-    args=(-p --agent "$agent" --output-format stream-json --verbose --dangerously-skip-permissions)
+    # Only the tools the agents use: every tool of Claude Code costs its definition in each request (all of
+    # them about 11k tokens, these about 6k), read again at each step of the turn.
+    args=(-p --agent "$agent" --output-format stream-json --verbose --dangerously-skip-permissions --tools "${PLAYBOOK_TOOLS:-Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch}")
     [[ -n "${PLAYBOOK_EFFORT:-}" ]] && args+=(--effort "$PLAYBOOK_EFFORT")
     [[ -n "${PLAYBOOK_MODEL:-}" ]] && args+=(--model "$PLAYBOOK_MODEL")
     say "agent ${agent}${PLAYBOOK_ISSUE:+ on issue #${PLAYBOOK_ISSUE}} with Claude Code${PLAYBOOK_MODEL:+ and ${PLAYBOOK_MODEL}}${PLAYBOOK_EFFORT:+ (effort ${PLAYBOOK_EFFORT})}"

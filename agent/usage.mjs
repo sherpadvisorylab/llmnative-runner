@@ -100,8 +100,10 @@ export function toolKind(name, input = {}) {
     if (/playbook\.mjs\s+verify\b/.test(command)) return 'verify';
     if (/playbook\.mjs\s+mutate\b/.test(command)) return 'mutate';
     if (/playbook\.mjs\s+\w/.test(command)) return 'workflow';
-    if (/\b(npm|pnpm|yarn)\s+(ci|install|i)\b/.test(command)) return 'install';
-    if (/\b(npm|pnpm|yarn)\s+(run\s+)?test\b|node\s+--test|emulators:exec|vitest|jest|mocha/.test(command)) return 'tests';
+    // Anywhere in the line, with options before the verb too (`ls web; npm --prefix web ci`): what takes the
+    // time, not what comes first. Builds, typechecks and linters count with the tests.
+    if (/\b(npm|pnpm|yarn)\b[^;&|\n]*\s(ci|install|i)\b/.test(command)) return 'install';
+    if (/\b(npm|pnpm|yarn)\b[^;&|\n]*\s(run\s+)?(test|build|typecheck|lint)\b|node\s+--test|emulators:exec|vitest|jest|mocha|\btsc\b|\beslint\b/.test(command)) return 'tests';
     if (/^\s*(sleep|until|while)\b|tail\s+--pid|\bfor\b[^;]*;\s*do\b[\s\S]*\bsleep\s+\d/.test(command)) return 'waiting';
     if (/\bgit\s+(commit|push)\b/.test(command)) return 'write';
     if (/\bgit\s+(show|diff|log|grep|ls-files|fetch|status)\b|^\s*(cat|sed|head|tail|grep|ls|find|wc)\b/.test(command)) return 'read';
