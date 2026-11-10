@@ -285,18 +285,29 @@ export class Dispatcher {
         // pull request is open is in flight already and always goes on: otherwise CRs past the limit
         // (the limit lowered, two started together) would wait for each other forever.
         if (workflow.agents[needs].opensPullRequests) {
-            const inFlight = await this.changesInFlight(repository);
+            const inFlight = await this.changesInFlight(repository, workflow);
             if (!inFlight.includes(number) && inFlight.length >= (this.options.maxChanges ?? 1)) return null;
         }
         return { repository, number, agent: needs, rank: PRIORITY[workflow.priority] ?? PRIORITY.normal, priority: await this.priorityOf(issue), created: Date.parse(issue.created_at) };
     }
 
-    /** The CRs of the repository with their pull request open (`playbook/issue-<n>`). */
-    private async changesInFlight(repository: string): Promise<number[]> {
+    /**
+     * The CRs of the repository with their pull request open (`playbook/issue-<n>`), but those waiting for a person
+     * (blocked, interrupted): they move only when a person acts, and holding their place would stop every other CR
+     * (on crm two of them stopped the work for a night). Their conflicts, if any, go back to them when they move.
+     */
+    private async changesInFlight(repository: string, workflow: Workflow): Promise<number[]> {
         const pulls = await this.github.request<Array<{ head?: { ref?: string } }>>('GET', `/repos/${repository}/pulls?state=open&per_page=100`).catch(() => []);
-        return pulls
+        const numbers = pulls
             .map((pull) => Number(/^playbook\/issue-(\d+)$/.exec(pull.head?.ref ?? '')?.[1]))
             .filter((other) => other > 0);
+        const moving: number[] = [];
+        for (const number of numbers) {
+            const issue = await this.github.request<Issue>('GET', `/repos/${repository}/issues/${number}`).catch(() => null);
+            if (issue && workOf(workflow, issue.labels).needs === workflow.human) continue;
+            moving.push(number);
+        }
+        return moving;
     }
 
     /** The Priority of the issue on its board; normal when it has none or it cannot be read. */
@@ -747,7 +758,20 @@ export class Dispatcher {
                 // Put there by a person, not by a route: nothing to wait for, a person decides.
                 if (!gate) continue;
                 const route = ci.routes[gate.route] ?? { from: gate.from, to: gate.to, status: gate.status };
-                const runs = (await this.github.request<{ workflow_runs?: WorkflowRun[] }>('GET', `/repos/${repository}/actions/runs?head_sha=${gate.sha}&per_page=50`)).workflow_runs ?? [];
+                const runsOf = async (sha: string) => (await this.github.request<{ workflow_runs?: WorkflowRun[] }>('GET', `/repos/${repository}/actions/runs?head_sha=${sha}&per_page=50`)).workflow_runs ?? [];
+                let sha = gate.sha;
+                let runs = await runsOf(sha);
+                // Pushed with a later commit (the agent merged the working branch after its leave): GitHub ran the CI
+                // on the head of the pull request only, and that is the work to judge.
+                if (!runs.length) {
+                    const [owner] = repository.split('/');
+                    const pulls = await this.github.request<Array<{ head?: { sha?: string } }>>('GET', `/repos/${repository}/pulls?state=open&head=${encodeURIComponent(`${owner}:playbook/issue-${issue.number}`)}&per_page=1`).catch(() => []);
+                    const head = pulls[0]?.head?.sha;
+                    if (head && head !== sha) {
+                        sha = head;
+                        runs = await runsOf(sha);
+                    }
+                }
                 if (!runs.length && workflows === undefined) workflows = (await this.github.request<{ total_count?: number }>('GET', `/repos/${repository}/actions/workflows?per_page=1`).catch(() => ({ total_count: 0 }))).total_count ?? 0;
                 const verdict = gateVerdict(runs, workflows ?? 1, this.now() - gate.at, ci.timeoutMinutes);
                 if (verdict === 'wait') {
@@ -757,7 +781,7 @@ export class Dispatcher {
                 const jobs: RunJob[] = [];
                 for (const run of runs) jobs.push(...((await this.github.request<{ jobs?: RunJob[] }>('GET', `/repos/${repository}/actions/runs/${run.id}/jobs?per_page=100`).catch(() => ({ jobs: [] }))).jobs ?? []));
                 const minutes = billedMinutes(jobs);
-                const short = gate.sha.slice(0, 7);
+                const short = sha.slice(0, 7);
                 const runLinks = runs.map((run) => `[${run.name ?? 'run'}](${run.html_url})`).join(', ');
                 const fromName = workflow.agents[route.from]?.name ?? route.from;
                 const toName = route.to === 'closed' ? 'Closed' : workflow.agents[route.to]?.name ?? route.to;
@@ -794,7 +818,7 @@ ${failureReport(failed)}`;
                 }
                 await this.github.request('POST', `${base}/labels`, { labels: [workflow.needsPrefix + needs, workflow.statusPrefix + status] });
                 await this.github.request('POST', `${base}/comments`, {
-                    body: `${MARKER({ event: 'gate', agent: 'dispatcher', route: gate.route, result: verdict, to: needs, status, sha: gate.sha, minutes })}
+                    body: `${MARKER({ event: 'gate', agent: 'dispatcher', route: gate.route, result: verdict, to: needs, status, sha, minutes })}
 ${body}`,
                 });
                 if (needs === 'none') await this.github.request('PATCH', base, { state: 'closed', state_reason: 'completed' });
