@@ -43,6 +43,54 @@ export const TOOL_CALL_TIMEOUT_MS = 14 * 60_000;
 export const CHAT_SILENCE_MS = 10 * 60_000;
 const MCP_SCRIPT = '/usr/local/lib/playbook/studio-mcp.mjs';
 
+/**
+ * The files the person sends with a message (a screenshot, a PDF, a log): at most CHAT_FILES_MAX, each up to
+ * CHAT_FILE_MAX_BYTES and all together up to CHAT_FILES_MAX_BYTES, images, PDF, JSON and text only. Written in the
+ * container outside the repository, gone with it.
+ */
+export const CHAT_FILES_MAX = 5;
+export const CHAT_FILE_MAX_BYTES = 5 * 1024 * 1024;
+export const CHAT_FILES_MAX_BYTES = 15 * 1024 * 1024;
+const CHAT_FILE_TYPES = /^(image\/(png|jpeg|gif|webp)|application\/(pdf|json)|text\/[a-z0-9.+-]{1,40})$/;
+export const CHAT_FILES_DIR = '/work/attachments';
+export type ChatFile = { name: string; mimeType: string; data: Buffer };
+
+/** The files of a message as the studio sends them (name, mimeType, base64): none, the list, or null when one is not allowed. */
+export function chatFilesOf(value: unknown): ChatFile[] | null {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value) || value.length > CHAT_FILES_MAX) return null;
+    let total = 0;
+    const names = new Set<string>();
+    const files: ChatFile[] = [];
+    for (const item of value as Array<Record<string, unknown>>) {
+        const mimeType = String(item?.mimeType ?? '').toLowerCase();
+        const base64 = String(item?.base64 ?? '');
+        if (!CHAT_FILE_TYPES.test(mimeType) || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64)) return null;
+        const data = Buffer.from(base64, 'base64');
+        total += data.length;
+        if (!data.length || data.length > CHAT_FILE_MAX_BYTES || total > CHAT_FILES_MAX_BYTES) return null;
+        // Its own name, made safe for a path; twice the same: numbered.
+        const base = (String(item?.name ?? '').split(/[\\/]/).pop() ?? '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.-]+/, '').slice(0, 100) || 'file';
+        let name = base;
+        for (let index = 2; names.has(name); index += 1) name = `${index}-${base}`;
+        names.add(name);
+        files.push({ name, mimeType, data });
+    }
+    return files;
+}
+
+/** What the harness is told of the files of a message: where they are, to read them with its tools. */
+export function chatFilesNote(paths: Array<{ path: string; mimeType: string; bytes: number }>): string {
+    if (!paths.length) return '';
+    const size = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
+    return [
+        '',
+        '---',
+        'Files the person attached to this message (in the container, outside the repository): read each one with your tools before answering (images and PDF too).',
+        ...paths.map((file) => `- ${file.path} (${file.mimeType}, ${size(file.bytes)})`),
+    ].join('\n');
+}
+
 /** Where a chat runs: the provider of the organization and the model its engine is given. */
 export type ChatModel = { provider: string; model: string; variant?: string; name?: string; effort?: string };
 
@@ -53,6 +101,8 @@ export interface ChatHost {
     exec(name: string, command: string, env: Record<string, string>, onOutput: (chunk: string) => void): Promise<number>;
     /** Stops the harness answering in it (a message stopped by the person, or stuck): its exec then ends. */
     interrupt?(name: string): Promise<void>;
+    /** Writes a file in it (the files of a message); its folder made first. */
+    write?(name: string, path: string, data: Buffer): Promise<void>;
     remove(name: string): Promise<void>;
 }
 
@@ -80,6 +130,13 @@ export function dockerChatHost(command = 'docker', network?: string): ChatHost {
         async remove(name) {
             await run(['rm', '-f', name]);
         },
+        // Through the standard input of the exec: a file of some MB fits no variable; the path an argument, never code.
+        write: (name, path, data) => new Promise<void>((resolve, reject) => {
+            const child = spawn(command, ['exec', '-i', name, 'sh', '-c', 'mkdir -p "$(dirname "$1")" && cat > "$1"', 'sh', path], { env: { PATH: process.env.PATH, DOCKER_HOST: process.env.DOCKER_HOST }, stdio: ['pipe', 'ignore', 'ignore'] });
+            child.on('error', reject);
+            child.on('close', (code) => (code === 0 ? resolve() : reject(new Error('the file could not be written'))));
+            child.stdin.end(data);
+        }),
     };
 }
 
@@ -288,11 +345,12 @@ export class ServerChats {
     }
 
     /** A message of the person, answered by the harness of `model` in the chat; its events as they come. */
-    async send(id: string, text: string, model: ChatModel, emit: (event: ChatEvent) => void): Promise<void> {
+    async send(id: string, text: string, model: ChatModel, emit: (event: ChatEvent) => void, files: ChatFile[] = []): Promise<void> {
         const chat = this.chats.get(id);
         if (!chat) throw new ChatError('no-chat', 404);
         if (chat.busy) throw new ChatError('busy', 409);
         if (!text.trim() || text.length > MESSAGE_MAX) throw new ChatError('invalid', 400);
+        if (files.length && !this.deps.host.write) throw new ChatError('no-files', 400);
         const { env, accounts } = this.deps.keys();
         const all = connectedAccounts(env, accounts)[model.provider] ?? [];
         if (!all.length) throw new ChatError('no-provider', 409);
@@ -303,6 +361,18 @@ export class ServerChats {
         // How much Claude Code reasons (Brain, §8.7); opencode by the variant of the model.
         const effort = engine === 'claude-code' && model.effort && /^(low|medium|high|xhigh|max)$/.test(model.effort) ? model.effort : undefined;
         chat.busy = true;
+        // The files of the message in the container, each message in a folder of its own; the harness told where.
+        if (files.length) {
+            const folder = `${CHAT_FILES_DIR}/${chat.messages + 1}`;
+            try {
+                for (const file of files) await this.deps.host.write!(chat.container, `${folder}/${file.name}`, file.data);
+            } catch {
+                chat.busy = false;
+                throw new ChatError('files', 502);
+            }
+            text += chatFilesNote(files.map((file) => ({ path: `${folder}/${file.name}`, mimeType: file.mimeType, bytes: file.data.length })));
+            this.deps.log('chat files', { chat: id, files: files.length, bytes: files.reduce((sum, file) => sum + file.data.length, 0) });
+        }
         chat.emit = emit;
         chat.lastActive = this.now();
         const tools = chat.tools.length && this.deps.toolsUrl ? { list: chat.tools, url: this.deps.toolsUrl(chat.id), token: chat.token } : undefined;

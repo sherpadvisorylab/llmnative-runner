@@ -8,7 +8,7 @@ import { ImageError, imagePattern, isAdmin, type ImageHost } from './images.ts';
 import { ConfigError } from './config.ts';
 import { BackupError, type MemoryBackup } from './backup.ts';
 import { readMachine } from './machine.ts';
-import { ChatError } from './chats.ts';
+import { ChatError, chatFilesOf } from './chats.ts';
 
 // The HTTP side of the runner. Every route of a company lives under its path, `/<company>/…`, and is
 // served with that company only: its webhook secret, its studio token, its dispatcher.
@@ -25,14 +25,16 @@ import { ChatError } from './chats.ts';
 // A dispatcher started with one company in its environment also answers at the root, as before.
 
 const MAX_BODY = 5 * 1024 * 1024;
+/** A message of a chat with its files (15 MB at most, in base64). */
+const MAX_CHAT_MESSAGE = 25 * 1024 * 1024;
 
-function readBody(request: IncomingMessage): Promise<string> {
+function readBody(request: IncomingMessage, max = MAX_BODY): Promise<string> {
     return new Promise((resolve, reject) => {
         let size = 0;
         const chunks: Buffer[] = [];
         request.on('data', (chunk: Buffer) => {
             size += chunk.length;
-            if (size > MAX_BODY) {
+            if (size > max) {
                 reject(new Error('too large'));
                 request.destroy();
             } else chunks.push(chunk);
@@ -229,7 +231,7 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                 if (!tenant.config.studioToken) return send(response, 404, { error: 'studio access not configured' });
                 if (!fromStudio(tenant, request)) return send(response, 401, { error: 'bad token' });
                 const [, , id = '', action = '', callId = ''] = rest.split('/');
-                const body = request.method === 'POST' ? JSON.parse((await readBody(request)) || '{}') as Record<string, unknown> : {};
+                const body = request.method === 'POST' ? JSON.parse((await readBody(request, action === 'messages' ? MAX_CHAT_MESSAGE : MAX_BODY)) || '{}') as Record<string, unknown> : {};
                 try {
                     if (request.method === 'POST' && !id) return send(response, 200, await tenant.chats.start(String(body.id ?? ''), String(body.repository ?? ''), body.tools));
                     // What the studio gave for a call of one of its tools.
@@ -241,6 +243,9 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                         const model = body.model as { provider?: unknown; model?: unknown; variant?: unknown; name?: unknown; effort?: unknown } | undefined;
                         if (!tenant.chats.has(id, String(body.repository ?? ''))) return send(response, 404, { error: 'no-chat' });
                         if (typeof model?.provider !== 'string' || typeof model.model !== 'string') return send(response, 400, { error: 'invalid' });
+                        // The files of the message: images, PDF, JSON, text, within their limits.
+                        const files = chatFilesOf(body.attachments);
+                        if (!files) return send(response, 400, { error: 'invalid-files' });
                         response.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no' });
                         // A line every 15 s while the harness thinks or waits for a tool: a reply silent for minutes
                         // would be cut by what is in between (the fetch of the studio stops after 5 minutes without data).
@@ -256,7 +261,7 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                             ...(typeof model.variant === 'string' ? { variant: model.variant } : {}),
                             ...(typeof model.name === 'string' ? { name: model.name } : {}),
                             ...(typeof model.effort === 'string' ? { effort: model.effort } : {}),
-                        }, (event) => response.write(`${JSON.stringify(event)}\n`)).catch((error: Error & { status?: number }) => {
+                        }, (event) => response.write(`${JSON.stringify(event)}\n`), files).catch((error: Error & { status?: number }) => {
                             response.write(`${JSON.stringify({ type: 'error', message: error.message })}\n`);
                         });
                         finished = true;
