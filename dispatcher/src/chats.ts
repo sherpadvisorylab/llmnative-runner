@@ -154,7 +154,8 @@ export function chatScript(engine: 'claude-code' | 'opencode', continued: boolea
         // The subscription, never an API key; the prompt from stdin (the list of tools would take it).
         const mcp = tools ? `umask 077 && printf '%s' "$PLAYBOOK_MCP" > /tmp/studio-mcp.json && ` : '';
         const allow = tools ? ' --mcp-config /tmp/studio-mcp.json --allowedTools mcp__studio' : '';
-        return `cd /work/repo && ${mcp}printf '%s' "$PLAYBOOK_PROMPT" | env -u ANTHROPIC_API_KEY -u PLAYBOOK_MCP DISABLE_AUTOUPDATER=1 claude -p --output-format stream-json --verbose --include-partial-messages --model "$PLAYBOOK_MODEL"\${PLAYBOOK_EFFORT:+ --effort "$PLAYBOOK_EFFORT"}${continued ? ' --continue' : ''}${allow} --disallowedTools Edit Write NotebookEdit Bash`;
+        // The files of the messages are outside the repository: Claude Code reads only where it is let (--add-dir).
+        return `mkdir -p ${CHAT_FILES_DIR} && cd /work/repo && ${mcp}printf '%s' "$PLAYBOOK_PROMPT" | env -u ANTHROPIC_API_KEY -u PLAYBOOK_MCP DISABLE_AUTOUPDATER=1 claude -p --output-format stream-json --verbose --include-partial-messages --model "$PLAYBOOK_MODEL"\${PLAYBOOK_EFFORT:+ --effort "$PLAYBOOK_EFFORT"}${continued ? ' --continue' : ''}${allow} --add-dir ${CHAT_FILES_DIR} --disallowedTools Edit Write NotebookEdit Bash`;
     }
     return `cd /work/repo && opencode run --model "$PLAYBOOK_MODEL"\${PLAYBOOK_VARIANT:+ --variant "$PLAYBOOK_VARIANT"}${continued ? ' --continue' : ''} "$PLAYBOOK_PROMPT"`;
 }
