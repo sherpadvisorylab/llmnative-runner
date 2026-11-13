@@ -18,6 +18,17 @@ RUN apt-get update \
     && npm install -g "opencode-ai@${OPENCODE_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force
 
+# A browser, so that an agent sees the pages it builds, reviews or tests (`playbook.mjs screenshot`): Playwright with
+# Chromium and its system libraries, in a folder every user reads. The script finds it by PLAYBOOK_PLAYWRIGHT.
+ARG PLAYWRIGHT_VERSION=1.63.0
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV PLAYBOOK_PLAYWRIGHT=/usr/local/lib/node_modules/playwright
+RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}" \
+    && playwright install --with-deps chromium \
+    && chmod -R a+rX /ms-playwright \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm cache clean --force
+
 COPY --from=java /opt/java/openjdk /opt/java/openjdk
 ENV JAVA_HOME=/opt/java/openjdk
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
