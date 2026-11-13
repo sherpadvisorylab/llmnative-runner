@@ -4,6 +4,8 @@
 // gave the chat (PLAYBOOK_TOOLS) and sends each call to the dispatcher (PLAYBOOK_TOOLS_URL, with the token of the
 // chat), which passes it to the studio: the person approves there what needs it, the studio runs it and its
 // answer comes back here. Nothing of the studio runs in the container.
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { createInterface } from 'node:readline';
 
 const tools = (() => {
@@ -21,17 +23,39 @@ const CALL_TIMEOUT_MS = 15 * 60_000;
 const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
 const text = (value) => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }] });
 
+/**
+ * One POST that may wait as long as CALL_TIMEOUT_MS for its answer. Not fetch: its client gives up on an answer
+ * whose headers take more than 5 minutes ("fetch failed"), and an approval of the person can take longer.
+ */
+function post(target, body) {
+    return new Promise((resolve, reject) => {
+        const address = new URL(target);
+        const request = (address.protocol === 'https:' ? httpsRequest : httpRequest)(address, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), 'x-chat-token': token },
+        }, (response) => {
+            const chunks = [];
+            response.on('data', (chunk) => chunks.push(chunk));
+            response.on('end', () => resolve({ status: response.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') }));
+            response.on('error', reject);
+        });
+        request.setTimeout(CALL_TIMEOUT_MS, () => request.destroy(new Error('timed out')));
+        request.on('error', reject);
+        request.end(body);
+    });
+}
+
 async function call(name, args) {
     if (!tools.some((tool) => tool.name === name)) return { ...text(`No tool ${name}.`), isError: true };
     try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', 'x-chat-token': token },
-            body: JSON.stringify({ name, input: args ?? {} }),
-            signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
-        });
-        const answer = await response.json().catch(() => ({}));
-        if (!response.ok) return { ...text(answer.error ?? `The studio did not answer (${response.status}).`), isError: true };
+        const response = await post(url, JSON.stringify({ name, input: args ?? {} }));
+        let answer = {};
+        try {
+            answer = JSON.parse(response.text);
+        } catch {
+            // Not JSON: said by its status below.
+        }
+        if (response.status < 200 || response.status >= 300) return { ...text(answer.error ?? `The studio did not answer (${response.status}).`), isError: true };
         return { ...text(answer.result ?? null), ...(answer.isError ? { isError: true } : {}) };
     } catch (error) {
         return { ...text(`The studio did not answer: ${error.message}`), isError: true };
