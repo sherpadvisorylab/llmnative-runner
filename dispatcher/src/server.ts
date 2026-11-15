@@ -9,7 +9,7 @@ import { ConfigError } from './config.ts';
 import { BackupError, type MemoryBackup } from './backup.ts';
 import { readMachine } from './machine.ts';
 import { ChatError, chatFilesOf } from './chats.ts';
-import { COMPLETION_MODELS, CompletionError, completionRequestOf } from './completions.ts';
+import { CompletionError, checkAccess, completionRequestOf } from './completions.ts';
 
 // The HTTP side of the runner. Every route of a company lives under its path, `/<company>/…`, and is
 // served with that company only: its webhook secret, its studio token, its dispatcher.
@@ -46,13 +46,6 @@ function readBody(request: IncomingMessage, max = MAX_BODY): Promise<string> {
 }
 
 /** The studio of this company, by its token: `Authorization: Bearer <DISPATCHER_TOKEN>`. */
-/** The project asking for an answer of Claude Code: the completion token of the company, compared in constant time. */
-function fromProject(tenant: Tenant, request: IncomingMessage): boolean {
-    const given = Buffer.from(String(request.headers.authorization ?? '').replace(/^Bearer\s+/i, ''));
-    const expected = Buffer.from(tenant.config.completionToken ?? '');
-    return expected.length > 0 && given.length === expected.length && timingSafeEqual(given, expected);
-}
-
 function fromStudio(tenant: Tenant, request: IncomingMessage): boolean {
     const given = Buffer.from(String(request.headers.authorization ?? '').replace(/^Bearer\s+/i, ''));
     const expected = Buffer.from(tenant.config.studioToken ?? '');
@@ -227,10 +220,13 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
             // A call of a tool of the studio by the harness of a chat, from its container: the token of the chat, not of the studio.
             // An answer of Claude Code with the subscription of the company, for another project of it (a CRM):
             // GET says what it offers, POST answers a prompt. Never the prompt nor the answer in the log.
-            if (rest === '/complete' && (request.method === 'GET' || request.method === 'POST')) {
-                if (!tenant.config.completionToken) return send(response, 404, { error: 'not found' });
-                if (!fromProject(tenant, request)) return send(response, 401, { error: 'bad token' });
-                if (request.method === 'GET') return send(response, 200, { ok: true, engine: 'claude-code', models: [...COMPLETION_MODELS], accounts: tenant.completions.accounts() });
+            const project = /^\/projects\/([a-z0-9][a-z0-9-]{1,40}[a-z0-9])\/complete$/.exec(rest);
+            if (project && (request.method === 'GET' || request.method === 'POST')) {
+                // Each project by its access: an unknown one and none look the same; a wrong key, an ended access.
+                const allowed = checkAccess(tenant.config.projectAccess ?? [], project[1], request.headers.authorization, Date.now());
+                if (allowed === 'not found') return send(response, 404, { error: 'not found' });
+                if (allowed !== 'ok') return send(response, 401, { error: allowed });
+                if (request.method === 'GET') return send(response, 200, { ok: true, providers: tenant.completions.offer() });
                 let body: unknown;
                 try {
                     body = JSON.parse((await readBody(request, MAX_BODY)) || '{}');
@@ -240,7 +236,7 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
                 const completion = completionRequestOf(body);
                 if (!completion) return send(response, 400, { error: 'invalid' });
                 try {
-                    return send(response, 200, await tenant.completions.complete(completion));
+                    return send(response, 200, await tenant.completions.complete(completion, project[1]));
                 } catch (error) {
                     if (error instanceof CompletionError) return send(response, error.status, { error: error.message });
                     throw error;

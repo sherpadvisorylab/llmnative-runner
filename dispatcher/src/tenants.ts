@@ -39,7 +39,7 @@ export interface Tenant {
 
 /** The secrets of a company never reach a log: the values of its turns, its webhook secret, its studio token, installation tokens. */
 export function masker(config: CompanyConfig) {
-    const secrets = [...Object.values(config.agentEnv), config.webhookSecret ?? '', config.studioToken ?? '', config.completionToken ?? ''].filter((value) => value.length >= 8);
+    const secrets = [...Object.values(config.agentEnv), config.webhookSecret ?? '', config.studioToken ?? ''].filter((value) => value.length >= 8);
     // The tokens of the subscriptions of Claude come after the start: masked by their shape.
     return (text: string) => secrets.reduce((all, secret) => all.split(secret).join('***'), text).replace(/gh[suo]_[A-Za-z0-9]{20,}/g, '***').replace(/sk-ant-[A-Za-z0-9_-]{20,}/g, '***');
 }

@@ -1,3 +1,4 @@
+import { projectAccessOf, type ProjectAccess } from './completions.ts';
 import { readFileSync } from 'node:fs';
 
 // The settings of the dispatcher of a runner. The machine ones come from the environment of the
@@ -69,10 +70,10 @@ export interface CompanyConfig {
     /** The token the studio of the company sends to read its `/state`, `/events` and `/output`. */
     studioToken?: string;
     /**
-     * The token another project of the company (a CRM) sends to `/complete`: answers of Claude Code with its
-     * subscription (DISPATCHER_COMPLETION_TOKEN, at least 32 characters; a shorter one is not taken).
+     * The accesses of the other projects of the company (a CRM): `/projects/<slug>/complete` answers with its
+     * subscriptions to the key of each, known only by its hash (DISPATCHER_PROJECT_ACCESS, from the studio).
      */
-    completionToken?: string;
+    projectAccess?: ProjectAccess[];
     /** Turns at once of this company (MAX_PARALLEL of its file): no longer used, the machine sets them. */
     maxParallel: number;
     agentEnv: Record<string, string>;
@@ -166,7 +167,7 @@ export function readCompanyConfig(id: string, vars: Vars, readFile = (path: stri
         installationId: vars.GITHUB_INSTALLATION_ID ? positive(vars, 'GITHUB_INSTALLATION_ID', 0) : undefined,
         webhookSecret: vars.GITHUB_WEBHOOK_SECRET || undefined,
         studioToken: vars.DISPATCHER_TOKEN || undefined,
-        ...((vars.DISPATCHER_COMPLETION_TOKEN?.trim().length ?? 0) >= 32 ? { completionToken: vars.DISPATCHER_COMPLETION_TOKEN!.trim() } : {}),
+        projectAccess: projectAccessOf(vars.DISPATCHER_PROJECT_ACCESS),
         maxParallel: positive(vars, 'MAX_PARALLEL', 1),
         agentEnv: Object.fromEntries(names.filter((name) => vars[name]).map((name) => [name, vars[name]!])),
         ...(vars.PLAYBOOK_PROVIDER_ORDER?.trim() ? { providerOrder: vars.PLAYBOOK_PROVIDER_ORDER.split(',').map((id) => id.trim()).filter(Boolean) } : {}),
