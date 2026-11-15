@@ -9,6 +9,7 @@ import { ConfigError } from './config.ts';
 import { BackupError, type MemoryBackup } from './backup.ts';
 import { readMachine } from './machine.ts';
 import { ChatError, chatFilesOf } from './chats.ts';
+import { COMPLETION_MODELS, CompletionError, completionRequestOf } from './completions.ts';
 
 // The HTTP side of the runner. Every route of a company lives under its path, `/<company>/…`, and is
 // served with that company only: its webhook secret, its studio token, its dispatcher.
@@ -45,6 +46,13 @@ function readBody(request: IncomingMessage, max = MAX_BODY): Promise<string> {
 }
 
 /** The studio of this company, by its token: `Authorization: Bearer <DISPATCHER_TOKEN>`. */
+/** The project asking for an answer of Claude Code: the completion token of the company, compared in constant time. */
+function fromProject(tenant: Tenant, request: IncomingMessage): boolean {
+    const given = Buffer.from(String(request.headers.authorization ?? '').replace(/^Bearer\s+/i, ''));
+    const expected = Buffer.from(tenant.config.completionToken ?? '');
+    return expected.length > 0 && given.length === expected.length && timingSafeEqual(given, expected);
+}
+
 function fromStudio(tenant: Tenant, request: IncomingMessage): boolean {
     const given = Buffer.from(String(request.headers.authorization ?? '').replace(/^Bearer\s+/i, ''));
     const expected = Buffer.from(tenant.config.studioToken ?? '');
@@ -217,6 +225,27 @@ export function createRunnerServer(tenants: Tenants, options: { legacy?: string;
             // The chats of its studio with a harness here (§8.7): started for a repository, a message answered as
             // a stream of JSON lines (text, tools, end), closed. Read only: the harness changes nothing.
             // A call of a tool of the studio by the harness of a chat, from its container: the token of the chat, not of the studio.
+            // An answer of Claude Code with the subscription of the company, for another project of it (a CRM):
+            // GET says what it offers, POST answers a prompt. Never the prompt nor the answer in the log.
+            if (rest === '/complete' && (request.method === 'GET' || request.method === 'POST')) {
+                if (!tenant.config.completionToken) return send(response, 404, { error: 'not found' });
+                if (!fromProject(tenant, request)) return send(response, 401, { error: 'bad token' });
+                if (request.method === 'GET') return send(response, 200, { ok: true, engine: 'claude-code', models: [...COMPLETION_MODELS], accounts: tenant.completions.accounts() });
+                let body: unknown;
+                try {
+                    body = JSON.parse((await readBody(request, MAX_BODY)) || '{}');
+                } catch {
+                    return send(response, 400, { error: 'invalid' });
+                }
+                const completion = completionRequestOf(body);
+                if (!completion) return send(response, 400, { error: 'invalid' });
+                try {
+                    return send(response, 200, await tenant.completions.complete(completion));
+                } catch (error) {
+                    if (error instanceof CompletionError) return send(response, error.status, { error: error.message });
+                    throw error;
+                }
+            }
             if (request.method === 'POST' && /^\/chats\/[a-f0-9]{8}\/tool$/.test(rest)) {
                 const body = JSON.parse((await readBody(request)) || '{}') as Record<string, unknown>;
                 try {

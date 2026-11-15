@@ -10,6 +10,7 @@ import { fileTurnLogs } from './turnLogs.ts';
 import { countedGitHub, githubUsageCounter, type GitHubUsageCounter } from './githubUsage.ts';
 import { ClaudeAccounts } from './claudeAccounts.ts';
 import { ServerChats, dockerChatHost, type ChatHost } from './chats.ts';
+import { ServerCompletions } from './completions.ts';
 
 // The companies of a runner. Each one is a world of its own inside the dispatcher: its GitHub App,
 // its queue, its failures, its logs, its secrets masked in them. Nothing of a company reaches another.
@@ -23,6 +24,8 @@ export interface Tenant {
     claude: ClaudeAccounts;
     /** Its chats of the studio with a harness here (§8.7). */
     chats: ServerChats;
+    /** Answers of Claude Code with its subscription, for its other projects (`/complete`). */
+    completions: ServerCompletions;
     /** Its design sessions. */
     designs: DesignSessions;
     deliveries: Deliveries;
@@ -36,7 +39,7 @@ export interface Tenant {
 
 /** The secrets of a company never reach a log: the values of its turns, its webhook secret, its studio token, installation tokens. */
 export function masker(config: CompanyConfig) {
-    const secrets = [...Object.values(config.agentEnv), config.webhookSecret ?? '', config.studioToken ?? ''].filter((value) => value.length >= 8);
+    const secrets = [...Object.values(config.agentEnv), config.webhookSecret ?? '', config.studioToken ?? '', config.completionToken ?? ''].filter((value) => value.length >= 8);
     // The tokens of the subscriptions of Claude come after the start: masked by their shape.
     return (text: string) => secrets.reduce((all, secret) => all.split(secret).join('***'), text).replace(/gh[suo]_[A-Za-z0-9]{20,}/g, '***').replace(/sk-ant-[A-Za-z0-9_-]{20,}/g, '***');
 }
@@ -108,7 +111,7 @@ export interface TenantDeps {
  * The chats of each company of the machine: one for its whole life, whatever reloads its .env (a chat under
  * way is not lost); they use the keys of its dispatcher of now. Idle ones are closed every few minutes.
  */
-const serverChats = new Map<string, { chats: ServerChats; dispatcher: { current?: Dispatcher } }>();
+const serverChats = new Map<string, { chats: ServerChats; completions: ServerCompletions; dispatcher: { current?: Dispatcher } }>();
 const chatsOf = (config: CompanyConfig, deps: TenantDeps, github: GitHubApi, log: Log) => {
     let entry = serverChats.get(config.id);
     if (!entry) {
@@ -129,7 +132,20 @@ const chatsOf = (config: CompanyConfig, deps: TenantDeps, github: GitHubApi, log
             log,
         });
         setInterval(() => void chats.sweep(), 5 * 60_000).unref();
-        serverChats.set(config.id, entry = { chats, dispatcher });
+        // Its answers for its other projects: the same image, keys and credit as its chats.
+        const completions = new ServerCompletions({
+            company: config.id,
+            owner: `app-${config.appId}`,
+            image: deps.machine.image,
+            host: deps.chatHost ?? dockerChatHost('docker', deps.chatNetwork?.network),
+            keys: () => dispatcher.current?.keys() ?? { env: config.agentEnv, accounts: config.accounts ?? {} },
+            credit: {
+                exhausted: (key) => dispatcher.current?.isExhausted(key) ?? false,
+                spent: (key, until) => dispatcher.current?.markExhausted(key, until),
+            },
+            log,
+        });
+        serverChats.set(config.id, entry = { chats, completions, dispatcher });
     }
     return entry;
 };
@@ -181,7 +197,7 @@ export function createTenant(config: CompanyConfig, version: string, deps: Tenan
     });
     const chats = chatsOf(config, deps, github, log);
     chats.dispatcher.current = dispatcher;
-    return { id: config.id, config, github, dispatcher, claude, chats: chats.chats, designs, deliveries: new Deliveries(), mask, log, version, usage };
+    return { id: config.id, config, github, dispatcher, claude, chats: chats.chats, completions: chats.completions, designs, deliveries: new Deliveries(), mask, log, version, usage };
 }
 
 /**
