@@ -1,0 +1,102 @@
+{
+  "name": "@llmnative/runner",
+  "version": "1.0.0",
+  "description": "LLMNative Runner: Claude Code and opencode on your own VPS, for many tenants, with subscriptions per person. Client, management UI and installer of the runner.",
+  "type": "module",
+  "exports": {
+    "./client": {
+      "types": "./dist/types/client/index.d.ts",
+      "import": "./dist/client.mjs",
+      "require": "./dist/client.js"
+    },
+    "./ui": {
+      "types": "./dist/types/ui/index.d.ts",
+      "import": "./dist/ui.mjs",
+      "require": "./dist/ui.js"
+    },
+    "./setup": {
+      "types": "./dist/types/setup/index.d.ts",
+      "import": "./dist/setup.mjs",
+      "require": "./dist/setup.js"
+    },
+    "./steps": {
+      "types": "./dist/types/setup/steps.d.ts",
+      "import": "./dist/steps.mjs",
+      "require": "./dist/steps.js"
+    }
+  },
+  "bin": {
+    "llmnative-runner": "bin/runner.mjs"
+  },
+  "files": [
+    "dist/*.mjs",
+    "dist/*.js",
+    "dist/*.map",
+    "dist/types",
+    "bin",
+    "install",
+    "openapi",
+    "llms.txt"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.build.json",
+    "build:console": "vite build -c vite.console.config.mts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "console:dev": "vite -c vite.console.config.mts",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sherpadvisorylab/llmnative-runner.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sherpadvisorylab/llmnative-runner/issues"
+  },
+  "homepage": "https://github.com/sherpadvisorylab/llmnative-runner#readme",
+  "keywords": ["llmnative", "runner", "claude-code", "opencode", "vps", "self-hosted", "ai"],
+  "author": "wolfgan",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24.18.0 <25"
+  },
+  "packageManager": "npm@11.11.0",
+  "peerDependencies": {
+    "@llmnative/react": "^3.2.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@llmnative/react": { "optional": true },
+    "react": { "optional": true },
+    "react-dom": { "optional": true }
+  },
+  "dependencies": {
+    "ssh2": "^1.16.0"
+  },
+  "devDependencies": {
+    "@llmnative/react": "^3.2.0",
+    "@phosphor-icons/react": "^2.1.10",
+    "@supabase/supabase-js": "^2.119.0",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/ssh2": "^1.15.0",
+    "firebase": "^12.19.0",
+    "happy-dom": "^20.14.5",
+    "lucide-react": "^1.52.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router-dom": "^7.18.4",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,7 +1,0 @@
-{
-  "name": "playbook-dispatcher",
-  "private": true,
-  "type": "module",
-  "engines": { "node": ">=24" },
-  "scripts": { "start": "node src/main.ts" }
-}

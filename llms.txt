@@ -1,0 +1,17 @@
+# @llmnative/runner
+
+> Claude Code and opencode on your own VPS, for many tenants, with accounts per person. One repository: server (server/, Node 24, no dependencies, Docker socket), agent image (agent/: Claude Code + opencode), installer (install/install.sh, compose.yaml with Caddy TLS, coolify.yaml), API v1 (openapi/v1.yaml), npm package with entries /client, /ui, /setup, /steps and a CLI.
+
+## Model
+- Keys: admin token (machine, /data/admin-token: console, POST /v1/admin/pairing), platform key rk_platform_ (from POST /v1/pair with an 8-char code valid 15 min, once; manages tenants and keys, acts for a tenant with X-Runner-Tenant), project key rk_ (one tenant; permissions complete, chat, chat:tools, accounts, accounts:tenant, act-as-user, keys). Stored as sha256 only.
+- Person: X-Runner-User (needs act-as-user with a project key). Accounts by scope: tenant (shared) or person (theirs only). A request runs with the person's accounts first, then the tenant's (ids u:<id>, t:<id>); out of credit = skipped until the reset (per tenant, file), the next one tried; none left: 409 no-credit with until, or chat event error "no-credit:<iso>".
+- Providers: claude-code (token from `claude setup-token`, signed in through POST /v1/accounts/claude-code/login then /login/code), opencode-go and opencode (keys). complete: claude-code | opencode-go.
+- Chats: POST /v1/chats {id: 8 hex, tools?} → container per chat; POST /v1/chats/<id>/messages → NDJSON ChatEvent (text, reasoning, step, tool-call, done, error, ping); tools of the client via MCP in the container, answered with POST /v1/chats/<id>/calls/<call>. A chat belongs to its person.
+- Data: /data/registry.json (tenants, keys, pairing), /data/tenants/<t>/accounts/{tenant|users/<b64url>}/{claude.json,keys.json} (0600), /data/tenants/<t>/credit.json. Logs never hold tokens, prompts or answers.
+
+## Package
+- client: RunnerClient({ url, key?, tenant?, user?, fetch?, headers? }) with health, pair, info, createPairing, platform.{status,tenants,createTenant,removeTenant,keys,createKey,revokeKey,platformKeys,revokePlatformKey}, accounts.{list,startClaudeLogin,finishClaudeLogin,addClaudeToken,addKey,remove,order}, models, complete, chats.{start,send (async iterable),answerCall,stop,close}; .as({tenant,user}); RunnerError {status, code, until}; noCreditUntil(event); forwardToRunner(request, path, { url, key, tenant?, user }) forwards only the routes of a person (info, models, complete, accounts, chats) with the host's key and person.
+- ui (needs router + DataProvider + I18nProvider of @llmnative/react): RunnerAccounts({ client, scope: user|tenant, locale?, texts?, onChange? }), RunnersSettings({ fleet: RunnerFleet }) with RunnerFleet { list, add({name,url,code|key}), update(id,{name,isDefault,draining}), remove, status, install?({name,domain,access},onProgress), tenants?{list,assign} }, AddRunner, InstallGuide({ onPair, lookup?, check? }), RunnerConsole({ client }), runnerTexts {en,it}.
+- setup (Node, ssh2): installOverSsh(target {host,port,username,privateKey|password,hostFingerprint?}, { domain, version?, onProgress }) → { url, pairingCode, hostFingerprint }; installAndPair → { url, platformKey }.
+- steps: RUNNER_VERSION, RUNNER_REQUIREMENTS, installCommand, verifiedInstallCommands, GUIDE_STEPS, INSTALL_PHASES, parseInstallOutput (RUNNER_URL=, PAIRING_CODE=, RUNNER_ERROR=), phaseOf (STEP=), lookupDomain (DoH), checkRunner (/health, CORS *).
+- CLI: npx @llmnative/runner install|guide|pair.

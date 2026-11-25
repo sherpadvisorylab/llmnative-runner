@@ -1,0 +1,188 @@
+openapi: 3.1.0
+info:
+  title: LLMNative Runner API
+  version: 1.0.0
+  description: |
+    Claude Code and opencode on your own VPS, for many tenants, with accounts per person.
+    Every route but /health and /v1/pair takes `Authorization: Bearer <key>`:
+    the admin token of the machine, a platform key (`rk_platform_…`, from pairing) or a project key of a tenant (`rk_…`).
+    A platform key (or the admin token) names the tenant with `X-Runner-Tenant`. The person a request is for is
+    `X-Runner-User` (with the permission `act-as-user` for a project key). Errors are `{ "error": "<code>" }`.
+servers:
+  - url: https://runner.example.com
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer }
+  parameters:
+    tenant: { name: X-Runner-Tenant, in: header, required: false, schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' } }
+    user: { name: X-Runner-User, in: header, required: false, schema: { type: string, pattern: '^[A-Za-z0-9_.@-]{1,128}$' } }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string, examples: [bad token, expired, forbidden, no-tenant, no-provider, no-credit, busy, failed, timeout] }
+        until: { type: string, format: date-time, description: 'For no-credit: when an account may have credit again.' }
+      required: [error]
+    Account:
+      type: object
+      properties:
+        provider: { type: string, enum: [claude-code, opencode-go, opencode] }
+        id: { type: string }
+        label: { type: string }
+        at: { type: string, format: date-time }
+        scope: { type: string, enum: [user, tenant] }
+        noCreditUntil: { type: string, format: date-time }
+      required: [provider, id, at, scope]
+    Tenant:
+      type: object
+      properties: { id: { type: string }, name: { type: string }, createdAt: { type: string, format: date-time }, usersWithAccounts: { type: integer } }
+    Key:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [platform, project] }
+        tenant: { type: string }
+        name: { type: string }
+        permissions: { type: array, items: { type: string, enum: [complete, chat, 'chat:tools', accounts, 'accounts:tenant', act-as-user, keys] } }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: [string, 'null'], format: date-time }
+    ChatEvent:
+      description: One line of the NDJSON reply of a chat.
+      oneOf:
+        - { type: object, properties: { type: { const: text }, text: { type: string } } }
+        - { type: object, properties: { type: { const: reasoning }, text: { type: string } } }
+        - { type: object, properties: { type: { const: step }, id: { type: string }, label: { type: string }, status: { enum: [running, done] } } }
+        - { type: object, properties: { type: { const: tool-call }, id: { type: string }, name: { type: string }, input: { type: object } } }
+        - { type: object, properties: { type: { const: done } } }
+        - { type: object, properties: { type: { const: error }, message: { type: string, description: 'no-credit:<date> when every account ran out' } } }
+        - { type: object, properties: { type: { const: ping } }, description: every 15 seconds while the harness works }
+security:
+  - bearer: []
+paths:
+  /health:
+    get:
+      security: []
+      summary: Alive, version, how busy (numbers only)
+      responses: { '200': { description: OK } }
+  /v1/pair:
+    post:
+      security: []
+      summary: A pairing code (printed by the installer) gives a platform key, shown once
+      requestBody: { content: { application/json: { schema: { type: object, properties: { code: { type: string }, name: { type: string } }, required: [code] } } } }
+      responses:
+        '200': { description: The key, content: { application/json: { schema: { type: object, properties: { key: { type: string }, record: { $ref: '#/components/schemas/Key' }, version: { type: string } } } } } }
+        '401': { description: bad code }
+        '429': { description: locked after too many wrong codes }
+  /v1/admin/pairing:
+    post:
+      summary: (admin token) A new pairing code, valid 15 minutes and once
+      responses: { '201': { description: '{ code, expiresAt }' } }
+  /v1/platform/status:
+    get:
+      summary: (platform) Version, load, machine, tenants
+      responses: { '200': { description: OK } }
+  /v1/platform/tenants:
+    get:
+      summary: (platform) The tenants
+      responses: { '200': { description: '{ tenants: Tenant[] }' } }
+    post:
+      summary: (platform) A tenant, with its first project key unless key is false
+      requestBody: { content: { application/json: { schema: { type: object, properties: { id: { type: string }, name: { type: string }, key: { type: boolean }, keyPermissions: { type: array, items: { type: string } } }, required: [id] } } } }
+      responses: { '201': { description: '{ tenant, key?, keyRecord? }' }, '409': { description: exists } }
+  /v1/platform/tenants/{tenant}:
+    delete:
+      summary: (platform) Removes a tenant, its keys and chats
+      parameters: [{ name: tenant, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: '{ removed: true }' } }
+  /v1/platform/tenants/{tenant}/keys:
+    get:
+      summary: (platform) The project keys of a tenant
+      parameters: [{ name: tenant, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: '{ keys: Key[] }' } }
+    post:
+      summary: (platform) A project key, shown once
+      parameters: [{ name: tenant, in: path, required: true, schema: { type: string } }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { name: { type: string }, permissions: { type: array, items: { type: string } }, expiresAt: { type: [string, 'null'] } } } } } }
+      responses: { '201': { description: '{ key, record }' } }
+  /v1/platform/tenants/{tenant}/keys/{key}:
+    delete:
+      summary: (platform) Revokes a project key
+      parameters: [{ name: tenant, in: path, required: true, schema: { type: string } }, { name: key, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: '{ removed: true }' } }
+  /v1/info:
+    get:
+      summary: What the runner offers, and the permissions of the key
+      responses: { '200': { description: OK } }
+  /v1/accounts:
+    get:
+      summary: The accounts of the person (accounts), or of the tenant without a person (accounts:tenant)
+      parameters: [{ $ref: '#/components/parameters/tenant' }, { $ref: '#/components/parameters/user' }]
+      responses: { '200': { description: '{ scope, accounts: Account[] }' } }
+  /v1/accounts/claude-code/login:
+    post:
+      summary: Starts the sign-in of a Claude subscription; returns the page of Anthropic
+      parameters: [{ $ref: '#/components/parameters/tenant' }, { $ref: '#/components/parameters/user' }]
+      responses: { '200': { description: '{ url }' }, '409': { description: 'busy | no-link' } }
+  /v1/accounts/claude-code/login/code:
+    post:
+      summary: The code Anthropic showed; the token stays on the runner
+      parameters: [{ $ref: '#/components/parameters/tenant' }, { $ref: '#/components/parameters/user' }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { code: { type: string }, label: { type: string } }, required: [code] } } } }
+      responses: { '200': { description: '{ connected, account }' }, '409': { description: 'refused | no-session | no-token' } }
+  /v1/accounts/{provider}:
+    post:
+      summary: A key (opencode-go, opencode), or a token made with claude setup-token (claude-code)
+      parameters: [{ name: provider, in: path, required: true, schema: { enum: [claude-code, opencode-go, opencode] } }, { $ref: '#/components/parameters/tenant' }, { $ref: '#/components/parameters/user' }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { key: { type: string }, token: { type: string }, label: { type: string } } } } } }
+      responses: { '201': { description: '{ account }' } }
+  /v1/accounts/{provider}/{id}:
+    delete:
+      summary: Disconnects an account (its secret deleted)
+      parameters: [{ name: provider, in: path, required: true, schema: { type: string } }, { name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: '{ removed: true }' } }
+  /v1/accounts/order:
+    put:
+      summary: The order of the accounts of a provider
+      requestBody: { content: { application/json: { schema: { type: object, properties: { provider: { type: string }, ids: { type: array, items: { type: string } } } } } } }
+      responses: { '200': { description: '{ accounts }' } }
+  /v1/models:
+    get:
+      summary: What can run now for the person (their accounts, then the tenant's)
+      parameters: [{ $ref: '#/components/parameters/tenant' }, { $ref: '#/components/parameters/user' }]
+      responses: { '200': { description: '{ providers: [{ id, models, accounts, available, yours, tenant }] }' } }
+  /v1/complete:
+    post:
+      summary: (complete) One answer, no tools
+      parameters: [{ $ref: '#/components/parameters/tenant' }, { $ref: '#/components/parameters/user' }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { provider: { enum: [claude-code, opencode-go] }, model: { type: string }, prompt: { type: string, maxLength: 200000 }, effort: { enum: [low, medium, high, xhigh, max] } }, required: [provider, model, prompt] } } } }
+      responses:
+        '200': { description: '{ text, usage? }' }
+        '409': { description: 'no-provider | no-credit (with until)', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '429': { description: busy }
+  /v1/chats:
+    post:
+      summary: (chat) A chat of the person; tools need chat:tools
+      requestBody: { content: { application/json: { schema: { type: object, properties: { id: { type: string, pattern: '^[a-f0-9]{8}$' }, tools: { type: array } }, required: [id] } } } }
+      responses: { '201': { description: '{ id }' }, '429': { description: busy } }
+  /v1/chats/{id}/messages:
+    post:
+      summary: (chat) A message; the reply as NDJSON lines (ChatEvent)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { text: { type: string }, model: { type: object, properties: { provider: { type: string }, model: { type: string }, variant: { type: string }, effort: { type: string } } }, attachments: { type: array } }, required: [text, model] } } } }
+      responses: { '200': { description: NDJSON, content: { application/x-ndjson: { schema: { $ref: '#/components/schemas/ChatEvent' } } } } }
+  /v1/chats/{id}/calls/{call}:
+    post:
+      summary: (chat) What the client gave for a call of one of its tools
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: call, in: path, required: true, schema: { type: string } }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { result: {}, isError: { type: boolean } } } } } }
+      responses: { '200': { description: '{ answered }' } }
+  /v1/chats/{id}/stop:
+    post:
+      summary: (chat) Stops the reply being written
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: '{ stopped }' } }
+  /v1/chats/{id}:
+    delete:
+      summary: (chat) Closes a chat (its container removed)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: '{ closed }' } }

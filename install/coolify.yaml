@@ -1,0 +1,16 @@
+# The LLMNative Runner on Coolify: give the service `runner` its domain in Coolify (port 8080); Coolify does TLS.
+# Then, in the terminal of the service: node src/cli.ts pair
+services:
+  runner:
+    image: ghcr.io/sherpadvisorylab/llmnative-runner:1.0.0
+    restart: unless-stopped
+    environment:
+      AGENT_IMAGE: ghcr.io/sherpadvisorylab/llmnative-runner-agent:1.0.0
+      PUBLIC_URL: ${SERVICE_FQDN_RUNNER_8080}
+      MAX_CHATS: ${MAX_CHATS:-6}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - runner-data:/data
+
+volumes:
+  runner-data:

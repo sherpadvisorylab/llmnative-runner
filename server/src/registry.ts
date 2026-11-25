@@ -1,0 +1,180 @@
+import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { writeJson } from './accounts.ts';
+
+// The tenants of the runner, its keys and its pairing codes, in one JSON file of its data (0600). Keys are kept
+// as their hash only: a key is seen once, when it is made.
+//   - platform key (`rk_platform_…`): whoever connected the runner (a CMS, a studio): tenants and their keys;
+//   - project key (`rk_…`): one tenant, with its permissions (complete, chat, accounts…, act-as-user).
+// A pairing code (8 characters, 15 minutes, used once) gives a platform key: the installer prints one.
+
+export const TENANT_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
+export const PERMISSIONS = ['complete', 'chat', 'chat:tools', 'accounts', 'accounts:tenant', 'act-as-user', 'keys'] as const;
+export type Permission = (typeof PERMISSIONS)[number];
+export const PAIRING_TTL_MS = 15 * 60_000;
+/** Wrong codes in a row after which pairing waits: a code of 8 characters is not guessed in these. */
+export const PAIRING_MAX_FAILURES = 10;
+const PAIRING_LOCK_MS = 15 * 60_000;
+const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+
+export type TenantRecord = { id: string; name: string; createdAt: string };
+export type KeyRecord = {
+    id: string;
+    kind: 'platform' | 'project';
+    tenant?: string;
+    name: string;
+    hash: string;
+    permissions: Permission[];
+    createdAt: string;
+    expiresAt: string | null;
+};
+/** A key as answers show it: never its hash. */
+export type KeyView = Omit<KeyRecord, 'hash'>;
+type State = { tenants: TenantRecord[]; keys: KeyRecord[]; pairing: Array<{ hash: string; expiresAt: string }> };
+
+export class RegistryError extends Error {
+    readonly status: number;
+
+    constructor(message: string, status: number) {
+        super(message);
+        this.status = status;
+    }
+}
+
+export const hashOf = (secret: string) => createHash('sha256').update(secret, 'utf8').digest('hex');
+const token = (bytes = 24) => randomBytes(bytes).toString('base64url');
+export const keyView = ({ hash: _hash, ...view }: KeyRecord): KeyView => view;
+
+/** `ABCD-EFGH`, read aloud or typed without confusing 0/O or 1/I. */
+export function newPairingCode(): string {
+    const chars = Array.from({ length: 8 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]);
+    return `${chars.slice(0, 4).join('')}-${chars.slice(4).join('')}`;
+}
+const normalCode = (code: string) => code.toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+export class Registry {
+    private state: State;
+    private readonly file: string;
+    private readonly now: () => number;
+    private failures = 0;
+    private lockedUntil = 0;
+
+    constructor(file: string, now = () => Date.now()) {
+        this.file = file;
+        this.now = now;
+        mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+        let saved: Partial<State> = {};
+        try {
+            if (existsSync(file)) saved = JSON.parse(readFileSync(file, 'utf8')) as Partial<State>;
+        } catch {
+            // A broken file: started empty, the old one overwritten at the first change.
+        }
+        this.state = { tenants: saved.tenants ?? [], keys: saved.keys ?? [], pairing: saved.pairing ?? [] };
+    }
+
+    private save() {
+        writeJson(this.file, this.state);
+    }
+
+    tenants(): TenantRecord[] {
+        return [...this.state.tenants];
+    }
+
+    tenant(id: string): TenantRecord | undefined {
+        return this.state.tenants.find((tenant) => tenant.id === id);
+    }
+
+    createTenant(id: string, name?: string): TenantRecord {
+        if (!TENANT_ID.test(id)) throw new RegistryError('invalid', 400);
+        if (this.tenant(id)) throw new RegistryError('exists', 409);
+        const tenant = { id, name: (name ?? '').trim().slice(0, 100) || id, createdAt: new Date(this.now()).toISOString() };
+        this.state.tenants.push(tenant);
+        this.save();
+        return tenant;
+    }
+
+    /** Takes a tenant off, with its keys. */
+    removeTenant(id: string): boolean {
+        const before = this.state.tenants.length;
+        this.state.tenants = this.state.tenants.filter((tenant) => tenant.id !== id);
+        if (this.state.tenants.length === before) return false;
+        this.state.keys = this.state.keys.filter((key) => key.tenant !== id);
+        this.save();
+        return true;
+    }
+
+    /** A new key: its record, and the key itself, shown this once. */
+    createKey(input: { kind: 'platform' | 'project'; tenant?: string; name?: string; permissions?: Permission[]; expiresAt?: string | null }): { key: string; record: KeyView } {
+        if (input.kind === 'project' && (!input.tenant || !this.tenant(input.tenant))) throw new RegistryError('no-tenant', 404);
+        const permissions: Permission[] = input.kind === 'platform' ? [] : [...new Set<Permission>(input.permissions ?? ['complete', 'chat'])];
+        if (!permissions.every((permission) => (PERMISSIONS as readonly string[]).includes(permission))) throw new RegistryError('invalid', 400);
+        if (input.expiresAt && Number.isNaN(Date.parse(input.expiresAt))) throw new RegistryError('invalid', 400);
+        const key = `${input.kind === 'platform' ? 'rk_platform_' : 'rk_'}${token()}`;
+        const record: KeyRecord = {
+            id: token(6),
+            kind: input.kind,
+            ...(input.kind === 'project' ? { tenant: input.tenant } : {}),
+            name: (input.name ?? '').trim().slice(0, 100) || (input.kind === 'platform' ? 'platform' : 'project'),
+            hash: hashOf(key),
+            permissions,
+            createdAt: new Date(this.now()).toISOString(),
+            expiresAt: input.expiresAt ?? null,
+        };
+        this.state.keys.push(record);
+        this.save();
+        return { key, record: keyView(record) };
+    }
+
+    keys(filter: { kind?: 'platform' | 'project'; tenant?: string } = {}): KeyView[] {
+        return this.state.keys.filter((key) => (!filter.kind || key.kind === filter.kind) && (!filter.tenant || key.tenant === filter.tenant)).map(keyView);
+    }
+
+    revokeKey(id: string, tenant?: string): boolean {
+        const before = this.state.keys.length;
+        this.state.keys = this.state.keys.filter((key) => !(key.id === id && (!tenant || key.tenant === tenant)));
+        if (this.state.keys.length === before) return false;
+        this.save();
+        return true;
+    }
+
+    /** The key of a request, by its bearer: its record, `expired`, or nothing (unknown and none look the same). */
+    authenticate(bearer: string): KeyRecord | 'expired' | undefined {
+        if (!/^rk_[A-Za-z0-9_-]{20,80}$/.test(bearer)) return undefined;
+        const given = Buffer.from(hashOf(bearer), 'hex');
+        const found = this.state.keys.find((key) => {
+            const expected = Buffer.from(key.hash, 'hex');
+            return expected.length === given.length && timingSafeEqual(expected, given);
+        });
+        if (!found) return undefined;
+        if (found.expiresAt && Date.parse(found.expiresAt) <= this.now()) return 'expired';
+        return found;
+    }
+
+    /** A pairing code, valid for 15 minutes and once. */
+    createPairing(): { code: string; expiresAt: string } {
+        const code = newPairingCode();
+        const expiresAt = new Date(this.now() + PAIRING_TTL_MS).toISOString();
+        this.state.pairing = [...this.state.pairing.filter((entry) => Date.parse(entry.expiresAt) > this.now()), { hash: hashOf(normalCode(code)), expiresAt }];
+        this.save();
+        return { code, expiresAt };
+    }
+
+    /** A pairing code given back: a new platform key, or why not. */
+    pair(code: string, name?: string): { key: string; record: KeyView } {
+        if (this.now() < this.lockedUntil) throw new RegistryError('locked', 429);
+        const hash = hashOf(normalCode(code));
+        const entry = this.state.pairing.find((item) => item.hash === hash && Date.parse(item.expiresAt) > this.now());
+        if (!entry) {
+            this.failures += 1;
+            if (this.failures >= PAIRING_MAX_FAILURES) {
+                this.lockedUntil = this.now() + PAIRING_LOCK_MS;
+                this.failures = 0;
+            }
+            throw new RegistryError('bad code', 401);
+        }
+        this.failures = 0;
+        this.state.pairing = this.state.pairing.filter((item) => item !== entry);
+        return this.createKey({ kind: 'platform', name: name || 'paired' });
+    }
+}
