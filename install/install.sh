@@ -23,6 +23,10 @@ say() { printf '%s\n' "$*"; }
 step() { say "STEP=$1"; say "==> $2"; }
 fail() { say "RUNNER_ERROR=$1"; say "error: $2" >&2; exit 1; }
 
+# Run as `curl … | sh`, the script itself is the standard input: everything is in main, called on the last line, so
+# that the whole script is read before anything runs, and no command can read what is left of it.
+main() {
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain) DOMAIN="${2:-}"; shift 2 ;;
@@ -164,22 +168,22 @@ if [ -n "$AGENT_CPUS" ]; then set_env AGENT_CPUS "$AGENT_CPUS"; fi
 
 step start "Starting the runner $VERSION"
 cd "$DIR"
-docker compose pull -q || fail pull "the images of $VERSION could not be downloaded"
-docker compose up -d --remove-orphans >/dev/null || fail start "the runner did not start (docker compose logs runner)"
+docker compose pull -q </dev/null || fail pull "the images of $VERSION could not be downloaded"
+docker compose up -d --remove-orphans </dev/null >/dev/null || fail start "the runner did not start (docker compose logs runner)"
 
 step agent "Downloading the image of the harnesses"
 docker pull -q "ghcr.io/sherpadvisorylab/llmnative-runner-agent:$VERSION" >/dev/null || say "warning: the image of the harnesses will be downloaded at the first chat"
 
 step health "Waiting for the runner"
 tries=0
-until docker compose exec -T runner curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; do
+until docker compose exec -T runner curl -fsS http://127.0.0.1:8080/health </dev/null >/dev/null 2>&1; do
   tries=$((tries + 1))
   [ "$tries" -lt 60 ] || fail health "the runner does not answer (docker compose logs runner)"
   sleep 2
 done
 
 step pair "Pairing code"
-PAIRING="$(docker compose exec -T runner node src/cli.ts pair | sed -n 's/^PAIRING_CODE=//p')"
+PAIRING="$(docker compose exec -T runner node src/cli.ts pair </dev/null | sed -n 's/^PAIRING_CODE=//p')"
 [ -n "$PAIRING" ] || fail pair "no pairing code (docker compose logs runner)"
 
 step tls "Certificate for https://$DOMAIN"
@@ -204,3 +208,6 @@ say "  Another code:  docker compose -f $DIR/compose.yaml exec runner node src/c
 say ""
 say "RUNNER_URL=https://$DOMAIN"
 say "PAIRING_CODE=$PAIRING"
+}
+
+main "$@" </dev/null

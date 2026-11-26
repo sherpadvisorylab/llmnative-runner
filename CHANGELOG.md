@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 Images and npm package share the version.
 
+## [Unreleased]
+
+### Fixed
+- `curl … | sh`: the installer is read whole before it runs (everything in `main`) and Docker commands get no
+  standard input; before, `docker compose exec` could swallow the rest of the script, which then ended with
+  "Syntax error: end of file unexpected" (seen upgrading a VPS to 1.0.2: the runner was up, the summary missing).
+
 ## [1.0.2] - 2026-11-26
 
 From the first automatic installation on a new VPS (161.97.140.94).
