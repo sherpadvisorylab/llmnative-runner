@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 Images and npm package share the version.
 
+## [Unreleased]
+
+### Added
+- A platform key of a project: pairing (by code or by asking) can name a `project` (lowercase and digits, no hyphen).
+  That key sees, makes, reaches and gives keys only for the tenants `<project>` and `<project>-<tenant>`, and sees and
+  revokes only the platform keys of its project: several projects share a runner without seeing each other. The
+  console shows the project of each request and lists the connected platforms («Connected platforms»), where the
+  admin gives a project to a key made before (`PUT /v1/admin/keys/<id>/project`); until then it sees every tenant.
+  `installAndPair({ project })`, client `pair(code, name, project)`, `requestPairing(name, project)`, `setKeyProject`.
+- API keys of the providers by use (Anthropic, OpenAI, Gemini, Mistral, DeepSeek, OpenRouter) as accounts of a tenant
+  or a person, run by opencode in answers and chats with the model named as opencode wants it (`gemini` →
+  `google/<model>`); `/v1/models` says the kind of each provider (`subscription` | `usage`). `RunnerAccounts` adds the
+  key of any provider (`providers` prop; a tenant gets them all by default).
+
 ## [1.1.2] - 2026-11-26
 
 ### Fixed
