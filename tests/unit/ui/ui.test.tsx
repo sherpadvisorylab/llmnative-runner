@@ -86,3 +86,41 @@ describe('the runners of a platform', () => {
         expect(screen.getByText('It is already installed')).toBeTruthy();
     });
 });
+
+describe('connecting a runner already installed', () => {
+    it('asks the runner, shows the code to approve there, and connects when it is approved', async () => {
+        const runner = { id: 'r1', name: 'VPS', url: 'https://vps.test' };
+        let approved = false;
+        const fleet: RunnerFleet = {
+            list: async () => [],
+            add: vi.fn(),
+            update: vi.fn(async () => {}),
+            remove: vi.fn(async () => {}),
+            status: vi.fn(),
+            startPairing: vi.fn(async () => ({ id: 'p1', code: 'K7QM-2XPA', approveUrl: 'https://vps.test/console/?approve=K7QM-2XPA', expiresAt: new Date(Date.now() + 600_000).toISOString() })),
+            pairingStatus: vi.fn(async () => (approved ? { status: 'approved' as const, runner } : { status: 'pending' as const })),
+        };
+        const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        try {
+            render(<RunnersSettings fleet={fleet} />, { wrapper: wrap });
+            fireEvent.click(await screen.findByText('Add a runner'));
+            fireEvent.click(await screen.findByText('It is already installed'));
+            expect(document.querySelector('input[name="code"]')).toBeNull();
+            fireEvent.change(document.querySelector('input[name="url"]')!, { target: { value: 'vps.test' } });
+            await act(async () => { fireEvent.click(screen.getByText('Continue')); });
+            expect(fleet.startPairing).toHaveBeenCalledWith({ name: 'vps.test', url: 'https://vps.test' });
+            expect(await screen.findByText('K7QM-2XPA')).toBeTruthy();
+            fireEvent.click(screen.getByText('Open the runner to approve'));
+            expect(open).toHaveBeenCalledWith('https://vps.test/console/?approve=K7QM-2XPA', '_blank', 'noopener');
+            await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+            expect(fleet.pairingStatus).toHaveBeenCalledWith('p1');
+            approved = true;
+            await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+            await vi.waitFor(() => expect(screen.queryByText('K7QM-2XPA')).toBeNull());
+        } finally {
+            vi.useRealTimers();
+            open.mockRestore();
+        }
+    });
+});

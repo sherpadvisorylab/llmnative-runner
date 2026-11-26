@@ -11,6 +11,9 @@ import { fill, textsFor, type RunnerUiTexts } from './texts';
 
 export type RunnerEntry = { id: string; name: string; url: string; isDefault?: boolean; draining?: boolean };
 
+export type RunnerPairingStart = { id: string; code: string; approveUrl: string; expiresAt: string };
+export type RunnerPairingState = { status: 'pending' | 'denied' | 'expired' } | { status: 'approved'; runner: RunnerEntry };
+
 export type RunnerSshAccess = { host: string; port?: number; username: string; privateKey?: string; password?: string };
 
 /** What the platform does for this page, in its backend (where the platform keys are). */
@@ -23,6 +26,14 @@ export interface RunnerFleet {
     status(id: string): Promise<RunnerStatus>;
     /** Installs and connects a runner over SSH (`@llmnative/runner/setup` in the backend); none: only by hand. */
     install?(input: { name: string; domain: string; access: RunnerSshAccess }, onProgress: (progress: { line: string; phase?: InstallPhase }) => void): Promise<RunnerEntry>;
+    /**
+     * Connects a runner already installed by asking it (device flow): the backend asks the runner and keeps the
+     * secret of the request, the person approves on the runner (`approveUrl`, the same `code` on both sides).
+     * None: only with a pairing code.
+     */
+    startPairing?(input: { name: string; url: string }): Promise<RunnerPairingStart>;
+    /** How the request is going; approved, the runner connected. */
+    pairingStatus?(id: string): Promise<RunnerPairingState>;
     /** The backend runs on the computer of the person (`npx @llmnative/runner setup`): it can use its SSH keys. */
     localKeys?: boolean;
     /** The tenants of the platform and their runner; none: no distribution on this page. */
@@ -179,7 +190,17 @@ export function AddRunner({ fleet, t, locale, onClose, onAdded }: { fleet: Runne
                         <InstallGuide locale={locale} texts={t} onPair={async ({ url, code }) => { await onAdded(await fleet.add({ name: name.trim() || new URL(url).hostname, url, code })); }} />
                     </>
                 )}
-                {mode === 'existing' && <ExistingRunner t={t} name={name} nameField={nameField} onConnect={async (url, code) => { try { await onAdded(await fleet.add({ name: name.trim() || new URL(url).hostname, url, code })); } catch (failure) { fail(failure); } }} />}
+                {mode === 'existing' && (
+                    <ExistingRunner
+                        t={t}
+                        name={name}
+                        nameField={nameField}
+                        pairing={fleet.startPairing && fleet.pairingStatus ? { start: fleet.startPairing.bind(fleet), status: fleet.pairingStatus.bind(fleet) } : undefined}
+                        onAdded={onAdded}
+                        onError={fail}
+                        onConnect={async (url, code) => { try { await onAdded(await fleet.add({ name: name.trim() || new URL(url).hostname, url, code })); } catch (failure) { fail(failure); } }}
+                    />
+                )}
             </div>
         </Modal>
     );
@@ -194,19 +215,99 @@ function Choice({ title, hint, onClick }: { title: string; hint: string; onClick
     );
 }
 
-function ExistingRunner({ t, nameField, onConnect }: { t: RunnerUiTexts; name: string; nameField: React.ReactNode; onConnect: (url: string, code: string) => Promise<void> }) {
+type Pairing = { start: NonNullable<RunnerFleet['startPairing']>; status: NonNullable<RunnerFleet['pairingStatus']> };
+
+const addressOf = (url: string) => (/^https?:\/\//.test(url.trim()) ? url.trim() : `https://${url.trim()}`).replace(/\/+$/, '');
+const timeOf = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+
+/** A runner already installed: its address, then the approval on the runner (or a pairing code, the old way). */
+function ExistingRunner({ t, name, nameField, pairing, onAdded, onError, onConnect }: {
+    t: RunnerUiTexts;
+    name: string;
+    nameField: React.ReactNode;
+    pairing?: Pairing;
+    onAdded: (entry: RunnerEntry) => void | Promise<void>;
+    onError: (failure: unknown) => void;
+    onConnect: (url: string, code: string) => Promise<void>;
+}) {
     const [url, setUrl] = useState('');
     const [code, setCode] = useState('');
-    const address = /^https?:\/\//.test(url.trim()) ? url.trim() : `https://${url.trim()}`;
+    const [withCode, setWithCode] = useState(!pairing);
+    const [request, setRequest] = useState<RunnerPairingStart | null>(null);
+    const [ended, setEnded] = useState<'denied' | 'expired' | null>(null);
+
+    // While a request waits: asking how it goes every two seconds, until approved, refused or expired.
+    useEffect(() => {
+        if (!request || !pairing) return undefined;
+        let stopped = false;
+        let timer: ReturnType<typeof setTimeout>;
+        const ask = async () => {
+            try {
+                const state = await pairing.status(request.id);
+                if (stopped) return;
+                if (state.status === 'approved') {
+                    await onAdded(state.runner);
+                    return;
+                }
+                if (state.status !== 'pending') {
+                    setEnded(state.status);
+                    setRequest(null);
+                    return;
+                }
+            } catch (failure) {
+                if (!stopped) onError(failure);
+            }
+            if (!stopped) timer = setTimeout(() => void ask(), 2000);
+        };
+        timer = setTimeout(() => void ask(), 2000);
+        return () => {
+            stopped = true;
+            clearTimeout(timer);
+        };
+    }, [request, pairing, onAdded, onError]);
+
+    if (request) {
+        return (
+            <div className="flex flex-col gap-3">
+                <h4 className="font-semibold">{t.pairWaitingTitle}</h4>
+                <p className="text-sm text-muted-foreground">{t.pairWaitingHint}</p>
+                <div className="rounded-lg border border-border p-4 text-center font-mono text-3xl font-semibold tracking-widest">{request.code}</div>
+                <div className="flex flex-wrap items-center gap-2">
+                    <ActionButton icon="external-link" label={t.pairOpen} variant="primary" onClick={() => window.open(request.approveUrl, '_blank', 'noopener')} />
+                    <span className="text-sm text-muted-foreground">{fill(t.pairWaiting, { at: timeOf(request.expiresAt) })}</span>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="flex flex-col gap-3">
             {nameField}
-            <Form appearance="empty" showNotice={false} onSubmit={() => false}>
+            {ended && <Alert variant={ended === 'denied' ? 'danger' : 'warning'}>{ended === 'denied' ? t.pairDenied : t.pairExpired}</Alert>}
+            <Form appearance="empty" showNotice={false} onSubmit={() => false} defaultValues={{ url, code }}>
                 <TextInput name="url" label={t.addUrl} placeholder="https://runner.example.com" onChange={({ value }) => setUrl(String(value ?? ''))} />
-                <TextInput name="code" label={t.addCode} placeholder="ABCD-EFGH" autoComplete="off" onChange={({ value }) => setCode(String(value ?? ''))} />
+                {withCode && <TextInput name="code" label={t.addCode} placeholder="ABCD-EFGH" autoComplete="off" onChange={({ value }) => setCode(String(value ?? ''))} />}
             </Form>
-            <div>
-                <LoadingButton label={t.addConnect} variant="primary" disabled={!url.trim() || code.trim().length < 8} onClick={() => onConnect(address, code.trim())} />
+            <div className="flex flex-wrap items-center gap-2">
+                {withCode
+                    ? <LoadingButton label={t.addConnect} variant="primary" disabled={!url.trim() || code.trim().length < 8} onClick={() => onConnect(addressOf(url), code.trim())} />
+                    : (
+                        <LoadingButton
+                            label={ended ? t.pairAgain : t.pairNext}
+                            variant="primary"
+                            disabled={!url.trim()}
+                            onClick={async () => {
+                                setEnded(null);
+                                try {
+                                    const address = addressOf(url);
+                                    setRequest(await pairing!.start({ name: name.trim() || new URL(address).hostname, url: address }));
+                                } catch (failure) {
+                                    onError(failure);
+                                }
+                            }}
+                        />
+                    )}
+                {pairing && <ActionButton label={withCode ? t.pairWithApproval : t.pairWithCode} variant="link" onClick={() => setWithCode((was) => !was)} />}
             </div>
         </div>
     );

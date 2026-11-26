@@ -12,7 +12,11 @@ import type { Runtime } from './runtime.ts';
 // The HTTP side of the runner: API v1 (JSON, `Authorization: Bearer <key>`) and the console.
 //   GET  /health                                         public: alive, version, how busy (numbers only)
 //   POST /v1/pair                                        a pairing code → a platform key
+//   POST /v1/pair/requests                               a platform asks to connect: a secret, a code, the page to approve
+//   POST /v1/pair/requests/poll                          the platform asks again with its secret: approved, a platform key
 //   POST /v1/admin/pairing                               (admin token) a new pairing code
+//   GET  /v1/admin/pairing/requests                      (admin token) the requests waiting
+//   POST /v1/admin/pairing/requests/<code>/approve|deny  (admin token) the answer
 //   GET  /v1/platform/status                             (platform) version, load, machine, tenants
 //   GET|POST /v1/platform/tenants, DELETE …/<id>         (platform) tenants
 //   GET|POST /v1/platform/tenants/<id>/keys, DELETE …/<key>  (platform) project keys of a tenant
@@ -355,6 +359,23 @@ export function createRunnerServer(runtime: Runtime, options: ServerOptions = {}
                 log('paired', { key: made.record.id, name: made.record.name });
                 return send(response, 200, { key: made.key, record: made.record, version: runtime.config.version });
             }
+            if (area === 'pair' && rest[0] === 'requests' && rest.length === 1 && request.method === 'POST') {
+                const body = await json(request);
+                const forwarded = header(request, 'x-forwarded-for')?.split(',')[0]?.trim();
+                const made = runtime.registry.requestPairing(typeof body.name === 'string' ? body.name : '', forwarded || request.socket.remoteAddress || undefined);
+                const base = runtime.config.publicUrl ?? `https://${header(request, 'host') ?? 'localhost'}`;
+                log('pairing requested', { from: forwarded || request.socket.remoteAddress });
+                return send(response, 201, { ...made, approveUrl: `${base}/console/?approve=${encodeURIComponent(made.code)}`, interval: 2 });
+            }
+            if (area === 'pair' && rest[0] === 'requests' && rest[1] === 'poll' && rest.length === 2 && request.method === 'POST') {
+                const body = await json(request);
+                const polled = runtime.registry.pollPairing(String(body.request ?? ''));
+                if (polled.status === 'approved') {
+                    log('paired', { key: polled.record.id, name: polled.record.name });
+                    return send(response, 200, { ...polled, version: runtime.config.version });
+                }
+                return send(response, 200, polled);
+            }
             // A call of a tool by the harness of a chat, from its container: the token of the chat, not a key.
             if (area === 'internal' && rest.length === 4 && rest[1] === 'chats' && rest[3] === 'tool' && request.method === 'POST') {
                 const tenant = runtime.tenant(rest[0]);
@@ -371,6 +392,14 @@ export function createRunnerServer(runtime: Runtime, options: ServerOptions = {}
                     const code = runtime.registry.createPairing();
                     log('pairing code made');
                     return send(response, 201, code);
+                }
+                if (rest[0] === 'pairing' && rest[1] === 'requests' && rest.length === 2 && request.method === 'GET') {
+                    return send(response, 200, { requests: runtime.registry.pairingRequests() });
+                }
+                if (rest[0] === 'pairing' && rest[1] === 'requests' && rest.length === 4 && (rest[3] === 'approve' || rest[3] === 'deny') && request.method === 'POST') {
+                    const answered = runtime.registry.answerPairing(rest[2], rest[3] === 'approve');
+                    log(rest[3] === 'approve' ? 'pairing approved' : 'pairing denied', { name: answered.name });
+                    return send(response, 200, { request: answered });
                 }
                 throw new HttpError(404, 'not found');
             }

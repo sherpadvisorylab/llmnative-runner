@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 Images and npm package share the version.
 
+## [1.1.0] - 2026-11-26
+
+### Added
+- Connecting a runner already installed by asking it (device flow), as signing in to a service from another
+  device: the platform asks (`POST /v1/pair/requests`, public, bounded: 20 waiting, 60 in ten minutes, 10 minutes
+  each), the admin of the runner approves in the console (`/console/?approve=<code>`, the same code shown on both
+  sides, with who asked and from where), the platform asks again with its secret (`POST /v1/pair/requests/poll`) and
+  gets its platform key once. No code to copy.
+- Admin routes `GET /v1/admin/pairing/requests`, `POST /v1/admin/pairing/requests/<code>/approve|deny`; client
+  `requestPairing`, `pollPairing`, `pairingRequests`, `answerPairing`.
+- UI: «It is already installed» asks the address, then shows the code and «Open the runner to approve», and
+  connects by itself when approved (`RunnerFleet.startPairing`/`pairingStatus`); the pairing code stays as «I have
+  a pairing code». The console lists the requests and can remember the admin token on the browser.
+- `npx @llmnative/runner setup` connects runners the same way.
+
 ## [1.0.3] - 2026-11-26
 
 ### Fixed

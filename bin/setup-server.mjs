@@ -80,6 +80,27 @@ export function startSetupServer({ port = 0, file = fleetFile(), log = () => {} 
         return entry;
     }
 
+    // Requests to connect a runner already installed (device flow): their secrets stay here, in memory.
+    const pairings = new Map();
+    async function startPairing({ name, url }) {
+        const address = String(url ?? '').replace(/\/+$/, '');
+        if (!/^https?:\/\//.test(address)) throw Object.assign(new Error('invalid url'), { status: 400 });
+        const made = await new RunnerClient({ url: address }).requestPairing('setup on this computer');
+        const id = randomBytes(8).toString('hex');
+        pairings.set(id, { name: String(name || new URL(address).hostname), url: address, request: made.request, expiresAt: made.expiresAt });
+        log(`asked ${address} to connect: approve code ${made.code} on the runner`);
+        return { id, code: made.code, approveUrl: made.approveUrl, expiresAt: made.expiresAt };
+    }
+    async function pairingStatus(id) {
+        const pending = pairings.get(id);
+        if (!pending) return { status: 'expired' };
+        const polled = await new RunnerClient({ url: pending.url }).pollPairing(pending.request);
+        if (polled.status === 'pending') return polled;
+        pairings.delete(id);
+        if (polled.status !== 'approved') return { status: polled.status };
+        return { status: 'approved', runner: view(await connect({ name: pending.name, url: pending.url, key: polled.key })) };
+    }
+
     const server = createServer(async (request, response) => {
         const url = new URL(request.url ?? '/', 'http://localhost');
         try {
@@ -89,6 +110,8 @@ export function startSetupServer({ port = 0, file = fleetFile(), log = () => {} 
                 const [area, id, what] = parts;
                 if (area === 'runners' && !id && request.method === 'GET') return send(response, 200, { runners: readFleet(file).runners.map(view) });
                 if (area === 'runners' && !id && request.method === 'POST') return send(response, 201, { runner: view(await connect(await body(request))) });
+                if (area === 'pairings' && !id && request.method === 'POST') return send(response, 201, await startPairing(await body(request)));
+                if (area === 'pairings' && id && request.method === 'GET') return send(response, 200, await pairingStatus(id));
                 const entry = readFleet(file).runners.find((runner) => runner.id === id);
                 if (area === 'runners' && id && !entry) return send(response, 404, { error: 'not found' });
                 if (area === 'runners' && what === 'status' && request.method === 'GET') {

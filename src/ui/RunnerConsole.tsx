@@ -1,18 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActionButton, Alert, Badge, Card, Code, DescriptionList, Form, LoadingButton, ModalYesNo, String as TextInput } from '@llmnative/react';
-import { RunnerError, type RunnerClient, type RunnerKey, type RunnerStatus, type RunnerTenant } from '../client';
+import { RunnerError, type RunnerClient, type RunnerKey, type RunnerPairingRequestView, type RunnerStatus, type RunnerTenant } from '../client';
 import { RunnerAccounts } from './RunnerAccounts';
 import { fill, textsFor, type RunnerUiTexts } from './texts';
 
 // The console of one runner, with its admin token: its state, a pairing code to connect a platform, its tenants with
 // their keys and accounts. What a runner without any platform needs to be used on its own.
 
-export type RunnerConsoleProps = { client: RunnerClient; locale?: string; texts?: Partial<RunnerUiTexts>; onSignOut?: () => void };
+/** `approve`: the code of the request a platform sent the person here for (`/console/?approve=ABCD-EFGH`). */
+export type RunnerConsoleProps = { client: RunnerClient; locale?: string; texts?: Partial<RunnerUiTexts>; onSignOut?: () => void; approve?: string };
 
 const gb = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
 
-export function RunnerConsole({ client, locale, texts, onSignOut }: RunnerConsoleProps) {
+export function RunnerConsole({ client, locale, texts, onSignOut, approve }: RunnerConsoleProps) {
     const t = textsFor(locale, texts);
     const [status, setStatus] = useState<RunnerStatus | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -40,6 +41,7 @@ export function RunnerConsole({ client, locale, texts, onSignOut }: RunnerConsol
                 {onSignOut && <ActionButton icon="log-out" label={t.consoleSignOut} variant="outline-secondary" onClick={onSignOut} />}
             </div>
             {error && <Alert variant="danger">{error}</Alert>}
+            <PairingRequests client={client} t={t} approve={approve} onAnswered={load} />
             <Card title={t.consoleStatus} loading={!status && !error} loaderMinHeight={100}>
                 {status && (
                     <DescriptionList items={[
@@ -130,5 +132,57 @@ function TenantRow({ client, tenant, t, locale, onKey, onChange }: { client: Run
                 </ModalYesNo>
             )}
         </div>
+    );
+}
+
+const normal = (code: string) => code.toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+/** The platforms asking to connect: approve or refuse, the one the person was sent for first. */
+function PairingRequests({ client, t, approve, onAnswered }: { client: RunnerClient; t: RunnerUiTexts; approve?: string; onAnswered: () => Promise<void> }) {
+    const [requests, setRequests] = useState<RunnerPairingRequestView[] | null>(null);
+    const [notice, setNotice] = useState<{ variant: 'success' | 'info'; text: string } | null>(null);
+    const load = useCallback(async () => {
+        try {
+            const listed = await client.pairingRequests();
+            const wanted = approve ? normal(approve) : '';
+            setRequests([...listed].sort((a, b) => Number(normal(b.code) === wanted) - Number(normal(a.code) === wanted)));
+        } catch {
+            setRequests([]);
+        }
+    }, [client, approve]);
+    useEffect(() => {
+        void load();
+        const timer = setInterval(() => void load(), 5000);
+        return () => clearInterval(timer);
+    }, [load]);
+    if (!approve && !requests?.length && !notice) return null;
+    return (
+        <Card title={t.consoleRequests} loading={requests === null} loaderMinHeight={80}>
+            <div className="flex flex-col gap-3">
+                <p className="text-sm text-muted-foreground">{t.consoleRequestsHint}</p>
+                {notice && <Alert variant={notice.variant}>{notice.text}</Alert>}
+                {requests?.length === 0 && !notice && <p className="text-sm text-muted-foreground">{t.consoleRequestsEmpty}</p>}
+                {requests?.map((request) => {
+                    const match = !!approve && normal(request.code) === normal(approve);
+                    const answer = async (yes: boolean) => {
+                        const answered = await client.answerPairing(request.code, yes);
+                        setNotice(yes ? { variant: 'success', text: fill(t.consoleApproved, { name: answered.name }) } : { variant: 'info', text: t.consoleDenied });
+                        await load();
+                        await onAnswered();
+                    };
+                    return (
+                        <div key={request.code} className={`flex flex-col gap-2 rounded-md border p-3 ${match ? 'border-primary' : 'border-border'}`}>
+                            {match && <Badge variant="primary">{t.consoleRequestMatch}</Badge>}
+                            <div className="font-mono text-2xl font-semibold tracking-widest">{request.code}</div>
+                            <p className="text-sm">{fill(t.consoleRequestFrom, { name: request.name, from: request.from ?? '?', at: when(request.createdAt) })}</p>
+                            <div className="flex flex-wrap gap-2">
+                                <LoadingButton label={t.consoleApprove} variant="primary" onClick={() => answer(true)} />
+                                <LoadingButton label={t.consoleDeny} variant="outline-danger" onClick={() => answer(false)} />
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </Card>
     );
 }

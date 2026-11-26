@@ -36,6 +36,11 @@ npx @llmnative/runner guide --domain runner.example.com   # the steps to do it b
 
 On Coolify: `install/coolify.yaml`, then `node src/cli.ts pair` in the terminal of the service.
 
+**Connecting a runner already installed, without copying codes** (device flow, as signing in to a service from
+another device): the platform asks the runner (`POST /v1/pair/requests`) and shows a code; the person opens the
+runner's console (`/console/?approve=<code>`, signed in with the admin token, which the browser can remember),
+checks that the code is the same and approves; the platform gets its platform key by itself.
+
 **Console**: `https://runner.example.com/console`, signed in with the admin token
 (`docker compose -f /opt/llmnative-runner/compose.yaml exec runner node src/cli.ts admin-token`): state, pairing codes, tenants, keys, accounts of a tenant.
 
@@ -44,7 +49,7 @@ On Coolify: `install/coolify.yaml`, then `node src/cli.ts pair` in the terminal 
 | Key | Who has it | What it does |
 |---|---|---|
 | admin token | the machine (`/data/admin-token`) | the console; pairing codes |
-| platform key `rk_platform_…` | the backend of a platform, from a pairing code | tenants and their keys; acts for any tenant with `X-Runner-Tenant` |
+| platform key `rk_platform_…` | the backend of a platform, from a pairing code or an approved request | tenants and their keys; acts for any tenant with `X-Runner-Tenant` |
 | project key `rk_…` | the backend of a tenant | `complete`, `chat`, `chat:tools`, `accounts`, `accounts:tenant`, `act-as-user`, `keys` |
 
 Keys are kept as hashes. A host never puts a key in the browser of its people: its backend verifies the person and forwards with `X-Runner-User` (`forwardToRunner`).

@@ -73,6 +73,32 @@ paths:
         '200': { description: The key, content: { application/json: { schema: { type: object, properties: { key: { type: string }, record: { $ref: '#/components/schemas/Key' }, version: { type: string } } } } } }
         '401': { description: bad code }
         '429': { description: locked after too many wrong codes }
+  /v1/pair/requests:
+    post:
+      security: []
+      summary: A platform asks to connect (device flow); the admin approves it in the console at approveUrl
+      requestBody: { content: { application/json: { schema: { type: object, properties: { name: { type: string } } } } } }
+      responses:
+        '201': { description: '{ request (secret of the platform), code (shown on both sides), approveUrl, expiresAt, interval }' }
+        '429': { description: busy (too many requests waiting) }
+  /v1/pair/requests/poll:
+    post:
+      security: []
+      summary: The platform asks again with its secret; approved, its platform key, once
+      requestBody: { content: { application/json: { schema: { type: object, properties: { request: { type: string } }, required: [request] } } } }
+      responses:
+        '200': { description: "{ status: pending | denied | expired } or { status: approved, key, record, version }" }
+  /v1/admin/pairing/requests:
+    get:
+      summary: (admin token) The pairing requests waiting
+      responses: { '200': { description: '{ requests: [{ code, name, from?, createdAt, expiresAt }] }' } }
+  /v1/admin/pairing/requests/{code}/{answer}:
+    post:
+      summary: (admin token) Approves or refuses a pairing request
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+        - { name: answer, in: path, required: true, schema: { type: string, enum: [approve, deny] } }
+      responses: { '200': { description: '{ request }' }, '404': { description: no such request waiting } }
   /v1/admin/pairing:
     post:
       summary: (admin token) A new pairing code, valid 15 minutes and once

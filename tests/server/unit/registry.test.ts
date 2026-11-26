@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { PAIRING_MAX_FAILURES, Registry, RegistryError, newPairingCode } from '../../../server/src/registry.ts';
+import { PAIRING_MAX_FAILURES, PAIR_REQUEST_MAX_PENDING, PAIR_REQUEST_TTL_MS, Registry, RegistryError, newPairingCode } from '../../../server/src/registry.ts';
 
 const fresh = (now = () => Date.now()) => new Registry(join(mkdtempSync(join(tmpdir(), 'runner-')), 'registry.json'), now);
 
@@ -76,5 +76,38 @@ describe('the registry', () => {
 
     it('codes have no characters that read alike', () => {
         for (let index = 0; index < 50; index += 1) expect(newPairingCode()).not.toMatch(/[01OIL]/);
+    });
+
+    it('a pairing request waits for the admin, gives the key once when approved, nothing when refused', () => {
+        const registry = fresh();
+        const asked = registry.requestPairing('llmnative-cms', '203.0.113.7');
+        expect(asked.request).toMatch(/^pr_/);
+        expect(registry.pollPairing(asked.request)).toEqual({ status: 'pending' });
+        expect(registry.pairingRequests()).toEqual([expect.objectContaining({ code: asked.code, name: 'llmnative-cms', from: '203.0.113.7' })]);
+        expect(JSON.stringify(registry.pairingRequests())).not.toContain(asked.request);
+        expect(() => registry.answerPairing('ZZZZ-ZZZZ', true)).toThrow(RegistryError);
+        registry.answerPairing(asked.code.toLowerCase().replace('-', ''), true);
+        const polled = registry.pollPairing(asked.request);
+        expect(polled.status).toBe('approved');
+        const key = polled.status === 'approved' ? polled.key : '';
+        const found = registry.authenticate(key);
+        expect(found && found !== 'expired' ? found.kind : null).toBe('platform');
+        expect(registry.pollPairing(asked.request)).toEqual({ status: 'expired' });
+
+        const refused = registry.requestPairing('other');
+        registry.answerPairing(refused.code, false);
+        expect(registry.pollPairing(refused.request)).toEqual({ status: 'denied' });
+        expect(registry.pollPairing('pr_guess')).toEqual({ status: 'expired' });
+    });
+
+    it('a pairing request ends in ten minutes, and asking is bounded', () => {
+        let now = Date.parse('2026-11-26T10:00:00Z');
+        const registry = fresh(() => now);
+        const asked = registry.requestPairing('cms');
+        now += PAIR_REQUEST_TTL_MS + 1;
+        expect(registry.pollPairing(asked.request)).toEqual({ status: 'expired' });
+        expect(() => registry.answerPairing(asked.code, true)).toThrow(RegistryError);
+        for (let index = 0; index < PAIR_REQUEST_MAX_PENDING; index += 1) registry.requestPairing(`cms ${index}`);
+        expect(() => registry.requestPairing('one more')).toThrow(expect.objectContaining({ status: 429 }));
     });
 });

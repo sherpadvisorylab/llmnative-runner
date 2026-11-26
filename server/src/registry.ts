@@ -8,6 +8,8 @@ import { writeJson } from './accounts.ts';
 //   - platform key (`rk_platform_…`): whoever connected the runner (a CMS, a studio): tenants and their keys;
 //   - project key (`rk_…`): one tenant, with its permissions (complete, chat, accounts…, act-as-user).
 // A pairing code (8 characters, 15 minutes, used once) gives a platform key: the installer prints one.
+// A pairing request is the same done from the platform (a device flow): it asks, the admin of the runner approves
+// in the console (the code shown on both sides), and the platform, asking again with its secret, gets the key.
 
 export const TENANT_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
 export const PERMISSIONS = ['complete', 'chat', 'chat:tools', 'accounts', 'accounts:tenant', 'act-as-user', 'keys'] as const;
@@ -16,6 +18,10 @@ export const PAIRING_TTL_MS = 15 * 60_000;
 /** Wrong codes in a row after which pairing waits: a code of 8 characters is not guessed in these. */
 export const PAIRING_MAX_FAILURES = 10;
 const PAIRING_LOCK_MS = 15 * 60_000;
+export const PAIR_REQUEST_TTL_MS = 10 * 60_000;
+/** Requests waiting at once, and made in ten minutes: anyone may ask, so asking is bounded. */
+export const PAIR_REQUEST_MAX_PENDING = 20;
+export const PAIR_REQUEST_MAX_RECENT = 60;
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
 export type TenantRecord = { id: string; name: string; createdAt: string };
@@ -32,6 +38,11 @@ export type KeyRecord = {
 /** A key as answers show it: never its hash. */
 export type KeyView = Omit<KeyRecord, 'hash'>;
 type State = { tenants: TenantRecord[]; keys: KeyRecord[]; pairing: Array<{ hash: string; expiresAt: string }> };
+
+/** A pairing request as the admin sees it: never its secret. */
+export type PairRequestView = { code: string; name: string; from?: string; createdAt: string; expiresAt: string };
+type PairRequest = PairRequestView & { hash: string; status: 'pending' | 'approved' | 'denied' };
+export type PairPoll = { status: 'pending' | 'denied' | 'expired' } | { status: 'approved'; key: string; record: KeyView };
 
 export class RegistryError extends Error {
     readonly status: number;
@@ -59,6 +70,9 @@ export class Registry {
     private readonly now: () => number;
     private failures = 0;
     private lockedUntil = 0;
+    /** Pairing requests live in memory: a restart drops them, the platform asks again. */
+    private requests: PairRequest[] = [];
+    private recent: number[] = [];
 
     constructor(file: string, now = () => Date.now()) {
         this.file = file;
@@ -176,5 +190,56 @@ export class Registry {
         this.failures = 0;
         this.state.pairing = this.state.pairing.filter((item) => item !== entry);
         return this.createKey({ kind: 'platform', name: name || 'paired' });
+    }
+
+    private liveRequests(): PairRequest[] {
+        this.requests = this.requests.filter((item) => Date.parse(item.expiresAt) > this.now());
+        return this.requests;
+    }
+
+    /** A platform asks to connect: a secret for it (to ask again), a code to show on both sides. */
+    requestPairing(name: string, from?: string): { request: string; code: string; expiresAt: string } {
+        const at = this.now();
+        this.recent = this.recent.filter((time) => time > at - PAIR_REQUEST_TTL_MS);
+        if (this.liveRequests().filter((item) => item.status === 'pending').length >= PAIR_REQUEST_MAX_PENDING || this.recent.length >= PAIR_REQUEST_MAX_RECENT) throw new RegistryError('busy', 429);
+        this.recent.push(at);
+        const request = `pr_${token(32)}`;
+        const code = newPairingCode();
+        const expiresAt = new Date(at + PAIR_REQUEST_TTL_MS).toISOString();
+        this.requests.push({
+            hash: hashOf(request),
+            code,
+            name: name.trim().slice(0, 80) || 'platform',
+            ...(from ? { from: from.slice(0, 64) } : {}),
+            createdAt: new Date(at).toISOString(),
+            expiresAt,
+            status: 'pending',
+        });
+        return { request, code, expiresAt };
+    }
+
+    /** The requests waiting for the admin. */
+    pairingRequests(): PairRequestView[] {
+        return this.liveRequests().filter((item) => item.status === 'pending').map(({ code, name, from, createdAt, expiresAt }) => ({ code, name, ...(from ? { from } : {}), createdAt, expiresAt }));
+    }
+
+    /** The admin answers a request, found by its code. */
+    answerPairing(code: string, approve: boolean): PairRequestView {
+        const wanted = normalCode(code);
+        const found = this.liveRequests().find((item) => item.status === 'pending' && normalCode(item.code) === wanted);
+        if (!found) throw new RegistryError('not found', 404);
+        found.status = approve ? 'approved' : 'denied';
+        return { code: found.code, name: found.name, ...(found.from ? { from: found.from } : {}), createdAt: found.createdAt, expiresAt: found.expiresAt };
+    }
+
+    /** The platform asks again with its secret: approved, the key, once. */
+    pollPairing(request: string): PairPoll {
+        const hash = hashOf(request);
+        const found = this.liveRequests().find((item) => timingSafeEqual(Buffer.from(item.hash), Buffer.from(hash)));
+        if (!found) return { status: 'expired' };
+        if (found.status === 'pending') return { status: 'pending' };
+        this.requests = this.requests.filter((item) => item !== found);
+        if (found.status === 'denied') return { status: 'denied' };
+        return { status: 'approved', ...this.createKey({ kind: 'platform', name: found.name }) };
     }
 }

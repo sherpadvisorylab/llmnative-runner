@@ -92,6 +92,24 @@ describe('the runner over HTTP', () => {
         expect((await call('POST', '/v1/admin/pairing', { key: platformKey })).status).toBe(403);
     });
 
+    it('a platform asks to connect, the admin approves in the console, the platform gets its key', async () => {
+        const { call, adminToken } = await start();
+        const asked = await call('POST', '/v1/pair/requests', { body: { name: 'llmnative-cms' } });
+        expect(asked.status).toBe(201);
+        expect(asked.json.approveUrl).toContain(`/console/?approve=${asked.json.code}`);
+        expect((await call('POST', '/v1/pair/requests/poll', { body: { request: asked.json.request } })).json).toEqual({ status: 'pending' });
+        // Only the admin sees and answers the requests.
+        expect((await call('GET', '/v1/admin/pairing/requests')).status).toBe(401);
+        const listed = await call('GET', '/v1/admin/pairing/requests', { key: adminToken });
+        expect(listed.json.requests.map((request: { code: string }) => request.code)).toEqual([asked.json.code]);
+        expect(JSON.stringify(listed.json)).not.toContain(asked.json.request);
+        expect((await call('POST', `/v1/admin/pairing/requests/${asked.json.code}/approve`, { key: adminToken })).status).toBe(200);
+        const polled = await call('POST', '/v1/pair/requests/poll', { body: { request: asked.json.request } });
+        expect(polled.json).toMatchObject({ status: 'approved', record: { kind: 'platform', name: 'llmnative-cms' } });
+        expect((await call('GET', '/v1/platform/status', { key: polled.json.key })).status).toBe(200);
+        expect((await call('POST', '/v1/pair/requests/poll', { body: { request: asked.json.request } })).json).toEqual({ status: 'expired' });
+    });
+
     it('each person has their own subscriptions: used for them only, never listed to others', async () => {
         const { call, tenantKey, fake } = await start();
         const ana = { key: tenantKey, headers: { 'x-runner-user': 'ana' } };

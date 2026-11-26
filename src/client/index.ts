@@ -35,6 +35,10 @@ export type RunnerStatus = {
     tenants: RunnerTenant[];
 };
 
+/** A pairing request made by a platform: `request` is its secret (keep it in the backend), `code` is shown on both sides. */
+export type RunnerPairingRequest = { request: string; code: string; approveUrl: string; expiresAt: string; interval: number };
+export type RunnerPairingPoll = { status: 'pending' | 'denied' | 'expired' } | { status: 'approved'; key: string; record: RunnerKey; version: string };
+export type RunnerPairingRequestView = { code: string; name: string; from?: string; createdAt: string; expiresAt: string };
 export type RunnerHealth = { ok: boolean; version: string; chats: number; answering: number; completions: number; maxChats: number };
 
 export type RunnerCompletionRequest = { provider: 'claude-code' | 'opencode-go'; model: string; prompt: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' };
@@ -141,6 +145,18 @@ export class RunnerClient {
         return this.request('POST', '/v1/pair', { code, ...(name ? { name } : {}) });
     }
 
+    /**
+     * Asks to connect (device flow): the admin of the runner approves it in the console at `approveUrl`, where the
+     * same `code` is shown; meanwhile `pollPairing(request)` every `interval` seconds, until it gives the key.
+     */
+    requestPairing(name: string): Promise<RunnerPairingRequest> {
+        return this.request('POST', '/v1/pair/requests', { name });
+    }
+
+    pollPairing(request: string): Promise<RunnerPairingPoll> {
+        return this.request('POST', '/v1/pair/requests/poll', { request });
+    }
+
     info(): Promise<{ version: string; harnesses: string[]; capabilities: Record<string, boolean>; permissions: RunnerPermission[]; tenant?: string }> {
         return this.request('GET', '/v1/info');
     }
@@ -148,6 +164,14 @@ export class RunnerClient {
     // ── Admin token ─────────────────────────────────────────────────────────────────────────────────────────
     createPairing(): Promise<{ code: string; expiresAt: string }> {
         return this.request('POST', '/v1/admin/pairing');
+    }
+
+    async pairingRequests(): Promise<RunnerPairingRequestView[]> {
+        return (await this.request<{ requests: RunnerPairingRequestView[] }>('GET', '/v1/admin/pairing/requests')).requests;
+    }
+
+    async answerPairing(code: string, approve: boolean): Promise<RunnerPairingRequestView> {
+        return (await this.request<{ request: RunnerPairingRequestView }>('POST', `/v1/admin/pairing/requests/${encodeURIComponent(code)}/${approve ? 'approve' : 'deny'}`)).request;
     }
 
     // ── Platform key ────────────────────────────────────────────────────────────────────────────────────────

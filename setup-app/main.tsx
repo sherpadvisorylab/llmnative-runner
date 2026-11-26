@@ -5,7 +5,7 @@ import '@llmnative/react/dist/index.css';
 import { MemoryRouter } from 'react-router-dom';
 import type { RunnerStatus } from '../src/client';
 import type { InstallPhase } from '../src/setup/steps';
-import { RunnersSettings, type RunnerEntry, type RunnerFleet } from '../src/ui';
+import { RunnersSettings, type RunnerEntry, type RunnerFleet, type RunnerPairingStart, type RunnerPairingState } from '../src/ui';
 
 // The page of `npx @llmnative/runner setup`: the same screens a platform shows to add runners, its backend the
 // command itself on this computer (SSH from here, the platform keys in ~/.llmnative-runner, 0600). The token in the
@@ -32,6 +32,8 @@ const fleet: RunnerFleet = {
     update: async (id, patch) => { await api('PATCH', `/runners/${encodeURIComponent(id)}`, patch); },
     remove: async (id) => { await api('DELETE', `/runners/${encodeURIComponent(id)}`); },
     status: (id) => api<RunnerStatus>('GET', `/runners/${encodeURIComponent(id)}/status`),
+    startPairing: (input) => api<RunnerPairingStart>('POST', '/pairings', input),
+    pairingStatus: (id) => api<RunnerPairingState>('GET', `/pairings/${encodeURIComponent(id)}`),
     // The installation as it goes: one JSON line per line the installer prints, then its end.
     install: async (input, onProgress) => {
         const response = await fetch('/api/install', { method: 'POST', headers: { 'x-setup-token': token, 'content-type': 'application/json' }, body: JSON.stringify(input) });
