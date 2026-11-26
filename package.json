@@ -1,6 +1,6 @@
 {
   "name": "@llmnative/runner",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "LLMNative Runner: Claude Code and opencode on your own VPS, for many tenants, with subscriptions per person. Client, management UI and installer of the runner.",
   "type": "module",
   "exports": {
