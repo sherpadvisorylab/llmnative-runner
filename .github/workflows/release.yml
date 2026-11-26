@@ -27,8 +27,9 @@ jobs:
         run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
+      # Before the tests: the test of the setup page imports the built files.
       - run: npm run build
+      - run: npm test
       - run: sh -n install/install.sh
 
   images:
