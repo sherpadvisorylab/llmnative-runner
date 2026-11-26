@@ -14,6 +14,6 @@
     "lib": ["DOM", "DOM.Iterable", "ES2023"],
     "noEmit": true
   },
-  "include": ["src", "console", "tests"],
+  "include": ["src", "console", "setup-app", "tests"],
   "exclude": ["tests/server"]
 }

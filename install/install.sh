@@ -11,10 +11,12 @@
 # For a machine reading it, some lines are `NAME=value`: STEP=<phase>, RUNNER_URL=, PAIRING_CODE=, RUNNER_ERROR=.
 set -eu
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 DIR="/opt/llmnative-runner"
 DOMAIN=""
 MAX_CHATS=""
+AGENT_MEMORY=""
+AGENT_CPUS=""
 SKIP_TLS_CHECK=""
 
 say() { printf '%s\n' "$*"; }
@@ -25,6 +27,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --domain) DOMAIN="${2:-}"; shift 2 ;;
     --max-chats) MAX_CHATS="${2:-}"; shift 2 ;;
+    --agent-memory) AGENT_MEMORY="${2:-}"; shift 2 ;;
+    --agent-cpus) AGENT_CPUS="${2:-}"; shift 2 ;;
     --upgrade|--version) VERSION="${2:-}"; shift 2 ;;
     --dir) DIR="${2:-}"; shift 2 ;;
     --skip-tls-check) SKIP_TLS_CHECK=1; shift ;;
@@ -87,21 +91,38 @@ services:
       # Chats open at once on the whole runner, and per tenant (about 1 GB of memory each while answering).
       MAX_CHATS: ${MAX_CHATS:-6}
       MAX_CHATS_PER_TENANT: ${MAX_CHATS_PER_TENANT:-6}
+      # Memory and cores of each container of a harness (e.g. 3g and 3); empty: no limit.
       AGENT_MEMORY: ${AGENT_MEMORY:-}
+      AGENT_CPUS: ${AGENT_CPUS:-}
     volumes:
       # The runner starts the containers of the harnesses next to itself.
       - /var/run/docker.sock:/var/run/docker.sock
       - runner-data:/data
 
+  # TLS by itself for RUNNER_DOMAIN. Replies of chats are streams: flushed at once, and kept open (up to a day)
+  # when Caddy reloads, so that a reply being written is not cut.
   caddy:
     image: caddy:2.8.4
     restart: unless-stopped
-    command: caddy reverse-proxy --from ${RUNNER_DOMAIN} --to runner:8080
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - caddy-data:/data
+
+configs:
+  caddyfile:
+    content: |
+      ${RUNNER_DOMAIN} {
+        header -Server
+        reverse_proxy runner:8080 {
+          flush_interval -1
+          stream_close_delay 24h
+        }
+      }
 
 volumes:
   runner-data:
@@ -115,7 +136,9 @@ set_env() {
 }
 set_env RUNNER_VERSION "$VERSION"
 set_env RUNNER_DOMAIN "$DOMAIN"
-[ -n "$MAX_CHATS" ] && set_env MAX_CHATS "$MAX_CHATS"
+if [ -n "$MAX_CHATS" ]; then set_env MAX_CHATS "$MAX_CHATS"; fi
+if [ -n "$AGENT_MEMORY" ]; then set_env AGENT_MEMORY "$AGENT_MEMORY"; fi
+if [ -n "$AGENT_CPUS" ]; then set_env AGENT_CPUS "$AGENT_CPUS"; fi
 
 step start "Starting the runner $VERSION"
 cd "$DIR"

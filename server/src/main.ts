@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { hostname } from 'node:os';
 import { createRunnerServer } from './api.ts';
-import { dockerChatHost } from './chats.ts';
+import { CHAT_LABEL, dockerChatHost } from './chats.ts';
 import { ConfigError, readConfig, type RunnerConfig } from './config.ts';
 import { Runtime } from './runtime.ts';
 
@@ -23,6 +23,26 @@ function ownNetwork(name: string): Promise<string | undefined> {
     });
 }
 
+/**
+ * The containers of chats and answers left by a runner before this one (an update, a restart): their conversations
+ * are gone with it, so they are removed rather than left running for weeks.
+ */
+function removeLeftovers(): Promise<number> {
+    return new Promise((resolve) => {
+        const list = spawn('docker', ['ps', '-aq', '--filter', `label=${CHAT_LABEL}`], { stdio: ['ignore', 'pipe', 'ignore'] });
+        let output = '';
+        list.stdout.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); });
+        list.on('error', () => resolve(0));
+        list.on('close', () => {
+            const ids = output.split(/\s+/).filter(Boolean);
+            if (!ids.length) return resolve(0);
+            const remove = spawn('docker', ['rm', '-f', ...ids], { stdio: 'ignore' });
+            remove.on('error', () => resolve(0));
+            remove.on('close', () => resolve(ids.length));
+        });
+    });
+}
+
 async function main() {
     let config: RunnerConfig;
     try {
@@ -35,6 +55,8 @@ async function main() {
         throw error;
     }
     const network = config.network ?? await ownNetwork(hostname());
+    const removed = await removeLeftovers();
+    if (removed) log('containers of before removed', { count: removed });
     const runtime = new Runtime({
         config,
         host: dockerChatHost('docker', network, { memory: config.agentMemory, cpus: config.agentCpus }),

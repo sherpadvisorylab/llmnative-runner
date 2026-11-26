@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // npx @llmnative/runner <command>
+//   setup   the screens to add runners (installed for you over SSH, the guide, or already installed), on localhost
 //   install --host <ip> --domain <runner.example.com> [--user root] [--key ~/.ssh/id_ed25519 | --password] [--port 22]
 //           [--version 1.0.0] [--fingerprint SHA256:…] [--pair]
 //   guide   --domain <runner.example.com>      the commands to run by hand on the VPS
@@ -9,6 +10,8 @@ import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
 import { installOverSsh, installCommand, verifiedInstallCommands, isDomain, RUNNER_VERSION, RUNNER_REQUIREMENTS } from '../dist/setup.mjs';
 import { RunnerClient } from '../dist/client.mjs';
+import { spawn } from 'node:child_process';
+import { startSetupServer, fleetFile } from './setup-server.mjs';
 
 const [command, ...rest] = process.argv.slice(2);
 const flags = {};
@@ -26,6 +29,16 @@ const ask = (question, hidden = false) => new Promise((resolve) => {
 });
 
 async function main() {
+    if (command === 'setup') {
+        const { address } = await startSetupServer({ port: flags.port ? Number(flags.port) : 0, log: (line) => console.log(line) });
+        console.log(`Runner setup: ${address}`);
+        console.log(`Runners and their keys are kept in ${fleetFile()}. Ctrl+C to stop.`);
+        if (!flags['no-open']) {
+            const [open, args] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', address]] : process.platform === 'darwin' ? ['open', [address]] : ['xdg-open', [address]];
+            spawn(open, args, { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
+        }
+        return;
+    }
     if (command === 'guide') {
         if (!isDomain(String(flags.domain ?? ''))) fail('--domain runner.example.com is required');
         console.log(`Runner ${RUNNER_VERSION}: a VPS with ${RUNNER_REQUIREMENTS.systems.join(' or ')}, ${RUNNER_REQUIREMENTS.cpus} cores, ${RUNNER_REQUIREMENTS.memoryGb} GB, ports ${RUNNER_REQUIREMENTS.ports.join(', ')} open.`);
@@ -72,7 +85,8 @@ async function main() {
         }
         return;
     }
-    console.log('usage: npx @llmnative/runner install --host <ip> --domain <runner.example.com> [--user root] [--key <file> | --password] [--pair]');
+    console.log('usage: npx @llmnative/runner setup [--port 0] [--no-open]');
+    console.log('       npx @llmnative/runner install --host <ip> --domain <runner.example.com> [--user root] [--key <file> | --password] [--pair]');
     console.log('       npx @llmnative/runner guide --domain <runner.example.com>');
     console.log('       npx @llmnative/runner pair --url <https://runner…> --code <ABCD-EFGH>');
     process.exit(command ? 64 : 0);

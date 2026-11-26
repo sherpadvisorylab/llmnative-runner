@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 Images and npm package share the version.
 
+## [1.0.1] - 2026-11-26
+
+Compared with the runner in production (Playbook 0.53.0 on Coolify, the reference).
+
+### Added
+- `npx @llmnative/runner setup`: the screens to add runners on this computer (installed for you over SSH, the guide
+  for dummies, or a runner already installed), SSH from here, the runners and their platform keys in
+  `~/.llmnative-runner/fleet.json` (0600). The same `RunnersSettings` a platform shows.
+- `install.sh --agent-memory 3g --agent-cpus 3`: limits of each container of a harness (`AGENT_CPUS` in compose too).
+
+### Fixed
+- Chat replies through Caddy: flushed at once and kept open when Caddy reloads (as the proxy of the runner in
+  production does with `stream_close_delay`), with a Caddyfile instead of `caddy reverse-proxy`.
+- Containers of chats and answers left by a runner before a restart are removed at start (in production some ran for
+  weeks).
+
 ## [1.0.0] - 2026-11-25
 
 The runner of Playbook (0.53.0, history kept) as a product of its own, without anything of Playbook.

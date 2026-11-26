@@ -21,7 +21,13 @@ curl -fsSL https://github.com/sherpadvisorylab/llmnative-runner/releases/downloa
 
 It installs Docker if missing, starts the runner and Caddy (TLS by itself), and prints the address and a **pairing code**. Run it again at any time; `--upgrade <version>` moves to another release. To check the script first, download it with its `install.sh.sha256` from the release.
 
-From your computer, over SSH:
+From your computer, with the screens (automatic install over SSH, the guide, or a runner already installed):
+
+```bash
+npx @llmnative/runner setup
+```
+
+Or from the command line, over SSH:
 
 ```bash
 npx @llmnative/runner install --host 203.0.113.10 --domain runner.example.com --key ~/.ssh/id_ed25519 --pair
@@ -51,7 +57,7 @@ Keys are kept as hashes. A host never puts a key in the browser of its people: i
 | `@llmnative/runner/ui` | React on `@llmnative/react` | `RunnerAccounts` (“My subscriptions”, or a tenant’s), `RunnersSettings` + `RunnerFleet` (the runners of a platform: add one automatically over SSH, with the guide, or already installed; default, draining, tenants), `InstallGuide`, `RunnerConsole`; texts in English and Italian (`texts` to override) |
 | `@llmnative/runner/setup` | Node | `installOverSsh`, `installAndPair` (the same install.sh, its log streamed, the SSH access never kept) |
 | `@llmnative/runner/steps` | browser, Node | the requirements, `installCommand`, `GUIDE_STEPS`, `parseInstallOutput`, `lookupDomain`, `checkRunner` |
-| `npx @llmnative/runner` | command line | `install`, `guide`, `pair` |
+| `npx @llmnative/runner` | command line | `setup` (the screens on localhost), `install`, `guide`, `pair` |
 
 The UI components need what the fields of `@llmnative/react` need around them: a router, a `DataProvider` and the `I18nProvider`.
 

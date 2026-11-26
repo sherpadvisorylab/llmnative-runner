@@ -14,4 +14,4 @@
 - ui (needs router + DataProvider + I18nProvider of @llmnative/react): RunnerAccounts({ client, scope: user|tenant, locale?, texts?, onChange? }), RunnersSettings({ fleet: RunnerFleet }) with RunnerFleet { list, add({name,url,code|key}), update(id,{name,isDefault,draining}), remove, status, install?({name,domain,access},onProgress), tenants?{list,assign} }, AddRunner, InstallGuide({ onPair, lookup?, check? }), RunnerConsole({ client }), runnerTexts {en,it}.
 - setup (Node, ssh2): installOverSsh(target {host,port,username,privateKey|password,hostFingerprint?}, { domain, version?, onProgress }) → { url, pairingCode, hostFingerprint }; installAndPair → { url, platformKey }.
 - steps: RUNNER_VERSION, RUNNER_REQUIREMENTS, installCommand, verifiedInstallCommands, GUIDE_STEPS, INSTALL_PHASES, parseInstallOutput (RUNNER_URL=, PAIRING_CODE=, RUNNER_ERROR=), phaseOf (STEP=), lookupDomain (DoH), checkRunner (/health, CORS *).
-- CLI: npx @llmnative/runner install|guide|pair.
+- CLI: npx @llmnative/runner setup (RunnersSettings on 127.0.0.1 with a token in the address; fleet in ~/.llmnative-runner/fleet.json 0600; SSH from this computer) | install | guide | pair.
