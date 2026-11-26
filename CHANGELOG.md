@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 Images and npm package share the version.
 
+## [1.1.2] - 2026-11-26
+
+### Fixed
+- Claude sign-in asked twice at once (the page of a person in React strict mode, two tabs): the second request killed
+  the CLI of the first, and the first, ending without its link, closed the second: both failed with "could not start
+  the sign-in". Now a sign-in going gives the same page of Anthropic to both, and an ending sign-in closes only itself.
+
 ## [1.1.1] - 2026-11-26
 
 From the first try of 1.1.0 in a browser.

@@ -42,7 +42,7 @@ export function cliSaid(output: string): string {
 /** The token on the screen of the CLI, as a person would read it (never in its bytes: the CLI skips cells already drawn). */
 export const tokenOnScreen = (output: string): string | undefined => CLAUDE_TOKEN.exec(screenOf(output).join('\n'))?.[0];
 
-type Session = { child: ChildProcess; output: string; done: boolean; timer: NodeJS.Timeout };
+type Session = { child: ChildProcess; output: string; done: boolean; timer: NodeJS.Timeout; link?: Promise<{ url: string } | { error: LoginError }> };
 type Saved = Record<string, { token: string; at: string; label?: string }>;
 
 /** The arguments of `docker` that run `claude setup-token` in a pseudo terminal, wide enough for its token on one line. */
@@ -141,6 +141,12 @@ export class ClaudeAccounts {
 
     /** Starts the sign-in: the link of Anthropic the CLI printed, or why not. One at a time; a new one ends the last. */
     async start(): Promise<{ url: string } | { error: LoginError }> {
+        // A sign-in going (the page asked twice, two tabs): the same page of Anthropic, the same CLI waiting for the code.
+        const going = this.session;
+        if (going && !going.done && going.link) {
+            const link = await going.link;
+            if ('url' in link && !going.done) return link;
+        }
         this.close();
         const child = this.open();
         const session: Session = { child, output: '', done: false, timer: setTimeout(() => this.close(), LOGIN_TIMEOUT_MS) };
@@ -156,12 +162,13 @@ export class ClaudeAccounts {
         child.on('error', () => {
             session.done = true;
         });
-        const url = await waitFor(session, (text) => AUTHORIZE.exec(text)?.[0], LINK_WAIT_MS);
-        if (!url) {
-            this.close();
-            return { error: 'no-link' };
-        }
-        return { url };
+        session.link = waitFor(session, (text) => AUTHORIZE.exec(text)?.[0], LINK_WAIT_MS).then((url) => {
+            if (url) return { url };
+            // Only this sign-in: another one may have started since.
+            if (this.session === session) this.close();
+            return { error: 'no-link' as const };
+        });
+        return session.link;
     }
 
     /** The code the person got from Anthropic: written to the CLI, the token it prints kept as `id`; why not, else. */

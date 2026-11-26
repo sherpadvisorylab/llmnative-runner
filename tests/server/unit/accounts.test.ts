@@ -1,5 +1,8 @@
 // @vitest-environment node
+import { EventEmitter } from 'node:events';
 import { mkdtempSync } from 'node:fs';
+import { PassThrough } from 'node:stream';
+import type { ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -51,4 +54,20 @@ describe('accounts by scope', () => {
         expect(mine.remove('opencode-go', second.id)).toBe(true);
         expect(mine.list().map((a) => a.id)).toEqual([first.id]);
     });
+
+    it('a Claude sign-in asked twice at once gives the same page, with one CLI (the page of a person in strict mode)', async () => {
+        const started: Array<{ stdout: PassThrough; killed: boolean }> = [];
+        const claude = new ClaudeAccounts(join(mkdtempSync(join(tmpdir(), 'runner-')), 'claude.json'), () => {
+            const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), killed: false, kill(this: EventEmitter & { killed: boolean }) { this.killed = true; this.emit('exit', null); return true; } });
+            started.push(child);
+            setTimeout(() => child.stdout.write('sign in: https://claude.com/cai/oauth/authorize?code=true&state=abc \n'), 10);
+            return child as unknown as ChildProcess;
+        });
+        const [first, second] = await Promise.all([claude.start(), claude.start()]);
+        expect(first).toEqual({ url: 'https://claude.com/cai/oauth/authorize?code=true&state=abc' });
+        expect(second).toEqual(first);
+        expect(started).toHaveLength(1);
+        expect(started[0].killed).toBe(false);
+    });
 });
+
