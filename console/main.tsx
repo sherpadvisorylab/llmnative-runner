@@ -56,13 +56,15 @@ function Console() {
                     <LoadingButton
                         label={t.consoleSignIn}
                         variant="primary"
-                        disabled={typed.trim().length < 32}
                         onClick={async () => {
-                            const candidate = new RunnerClient({ url: window.location.origin, key: typed.trim() });
+                            // A password manager fills the field without typing: read it as it is.
+                            const value = (typed || document.querySelector<HTMLInputElement>('input[name="token"]')?.value || '').trim();
+                            if (!value) return setError(t.error.replace('{error}', 'bad token'));
+                            const candidate = new RunnerClient({ url: window.location.origin, key: value });
                             try {
                                 await candidate.platform.status();
-                                keep(typed.trim(), remember);
-                                setToken(typed.trim());
+                                keep(value, remember);
+                                setToken(value);
                             } catch {
                                 setError(t.error.replace('{error}', 'bad token'));
                             }

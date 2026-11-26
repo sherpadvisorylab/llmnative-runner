@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ActionButton, Alert, Badge, Card, Form, LoadingButton, Modal, ModalYesNo, Password, Select, String as TextInput, Switch, TextArea } from '@llmnative/react';
 import type { RunnerStatus } from '../client';
 import type { InstallPhase } from '../setup/steps';
@@ -151,19 +152,33 @@ export function RunnersSettings({ fleet, locale, texts }: RunnersSettingsProps) 
 
 type Mode = 'choose' | 'automatic' | 'guided' | 'existing';
 
+/** The buttons of a step, in the footer of the modal (on the right, as the other modals). */
+function Actions({ target, children }: { target: HTMLElement | null; children: React.ReactNode }) {
+    return target ? createPortal(children, target) : null;
+}
+
+/** The name of a runner: its address, until the platform lets people rename it. */
+const hostOf = (url: string) => {
+    try {
+        return new URL(url).hostname;
+    } catch {
+        return url;
+    }
+};
+
 /** Adding a runner: the three ways, in one modal. */
 export function AddRunner({ fleet, t, locale, onClose, onAdded }: { fleet: RunnerFleet; t: RunnerUiTexts; locale?: string; onClose: () => void; onAdded: (entry: RunnerEntry) => void | Promise<void> }) {
     const [mode, setMode] = useState<Mode>('choose');
-    const [name, setName] = useState('');
     const [error, setError] = useState<string | null>(null);
-    const fail = (failure: unknown) => setError(fill(t.error, { error: (failure as Error).message }));
-    const nameField = (
-        <Form appearance="empty" showNotice={false} onSubmit={() => false}>
-            <TextInput name="name" label={t.addName} placeholder={t.addNamePlaceholder} onChange={({ value }) => setName(String(value ?? ''))} />
-        </Form>
-    );
+    const [footer, setFooter] = useState<HTMLDivElement | null>(null);
+    const fail = useCallback((failure: unknown) => setError(fill(t.error, { error: (failure as Error).message })), [t]);
     return (
-        <Modal title={t.addTitle} size="lg" onClose={onClose} footer={false}>
+        <Modal
+            title={t.addTitle}
+            size="lg"
+            onClose={onClose}
+            footer={mode === 'choose' || mode === 'guided' ? false : <div ref={setFooter} className="flex w-full flex-wrap items-center justify-end gap-3" />}
+        >
             <div className="flex flex-col gap-4">
                 {error && <Alert variant="danger">{error}</Alert>}
                 {mode === 'choose' && (
@@ -179,26 +194,20 @@ export function AddRunner({ fleet, t, locale, onClose, onAdded }: { fleet: Runne
                     </div>
                 )}
                 {mode === 'automatic' && fleet.install && (
-                    <>
-                        {nameField}
-                        <AutomaticInstall t={t} localKeys={!!fleet.localKeys} install={(domain, access, onProgress) => fleet.install!({ name: name.trim() || domain, domain, access }, onProgress)} onDone={onAdded} onError={fail} />
-                    </>
+                    <AutomaticInstall t={t} footer={footer} localKeys={!!fleet.localKeys} install={(domain, access, onProgress) => fleet.install!({ name: domain, domain, access }, onProgress)} onDone={onAdded} onError={fail} />
                 )}
                 {mode === 'guided' && (
-                    <>
-                        {nameField}
-                        <InstallGuide locale={locale} texts={t} onPair={async ({ url, code }) => { await onAdded(await fleet.add({ name: name.trim() || new URL(url).hostname, url, code })); }} />
-                    </>
+                    <InstallGuide locale={locale} texts={t} onPair={async ({ url, code }) => { await onAdded(await fleet.add({ name: hostOf(url), url, code })); }} />
                 )}
                 {mode === 'existing' && (
                     <ExistingRunner
                         t={t}
-                        name={name}
-                        nameField={nameField}
+                        footer={footer}
                         pairing={fleet.startPairing && fleet.pairingStatus ? { start: fleet.startPairing.bind(fleet), status: fleet.pairingStatus.bind(fleet) } : undefined}
                         onAdded={onAdded}
                         onError={fail}
-                        onConnect={async (url, code) => { try { await onAdded(await fleet.add({ name: name.trim() || new URL(url).hostname, url, code })); } catch (failure) { fail(failure); } }}
+                        onClearError={() => setError(null)}
+                        onConnect={async (url, code) => { try { await onAdded(await fleet.add({ name: hostOf(url), url, code })); } catch (failure) { fail(failure); } }}
                     />
                 )}
             </div>
@@ -220,14 +229,17 @@ type Pairing = { start: NonNullable<RunnerFleet['startPairing']>; status: NonNul
 const addressOf = (url: string) => (/^https?:\/\//.test(url.trim()) ? url.trim() : `https://${url.trim()}`).replace(/\/+$/, '');
 const timeOf = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 
+/** Polls that may fail in a row before the page says so: one call lost (a cold start, the network) is not an error. */
+const POLL_FAILURES = 5;
+
 /** A runner already installed: its address, then the approval on the runner (or a pairing code, the old way). */
-function ExistingRunner({ t, name, nameField, pairing, onAdded, onError, onConnect }: {
+function ExistingRunner({ t, footer, pairing, onAdded, onError, onClearError, onConnect }: {
     t: RunnerUiTexts;
-    name: string;
-    nameField: React.ReactNode;
+    footer: HTMLElement | null;
     pairing?: Pairing;
     onAdded: (entry: RunnerEntry) => void | Promise<void>;
     onError: (failure: unknown) => void;
+    onClearError: () => void;
     onConnect: (url: string, code: string) => Promise<void>;
 }) {
     const [url, setUrl] = useState('');
@@ -240,10 +252,12 @@ function ExistingRunner({ t, name, nameField, pairing, onAdded, onError, onConne
     useEffect(() => {
         if (!request || !pairing) return undefined;
         let stopped = false;
+        let failures = 0;
         let timer: ReturnType<typeof setTimeout>;
         const ask = async () => {
             try {
                 const state = await pairing.status(request.id);
+                failures = 0;
                 if (stopped) return;
                 if (state.status === 'approved') {
                     await onAdded(state.runner);
@@ -255,7 +269,8 @@ function ExistingRunner({ t, name, nameField, pairing, onAdded, onError, onConne
                     return;
                 }
             } catch (failure) {
-                if (!stopped) onError(failure);
+                failures += 1;
+                if (!stopped && failures >= POLL_FAILURES) onError(failure);
             }
             if (!stopped) timer = setTimeout(() => void ask(), 2000);
         };
@@ -272,23 +287,23 @@ function ExistingRunner({ t, name, nameField, pairing, onAdded, onError, onConne
                 <h4 className="font-semibold">{t.pairWaitingTitle}</h4>
                 <p className="text-sm text-muted-foreground">{t.pairWaitingHint}</p>
                 <div className="rounded-lg border border-border p-4 text-center font-mono text-3xl font-semibold tracking-widest">{request.code}</div>
-                <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm text-muted-foreground">{fill(t.pairWaiting, { at: timeOf(request.expiresAt) })}</p>
+                <Actions target={footer}>
                     <ActionButton icon="external-link" label={t.pairOpen} variant="primary" onClick={() => window.open(request.approveUrl, '_blank', 'noopener')} />
-                    <span className="text-sm text-muted-foreground">{fill(t.pairWaiting, { at: timeOf(request.expiresAt) })}</span>
-                </div>
+                </Actions>
             </div>
         );
     }
 
     return (
         <div className="flex flex-col gap-3">
-            {nameField}
             {ended && <Alert variant={ended === 'denied' ? 'danger' : 'warning'}>{ended === 'denied' ? t.pairDenied : t.pairExpired}</Alert>}
             <Form appearance="empty" showNotice={false} onSubmit={() => false} defaultValues={{ url, code }}>
                 <TextInput name="url" label={t.addUrl} placeholder="https://runner.example.com" onChange={({ value }) => setUrl(String(value ?? ''))} />
                 {withCode && <TextInput name="code" label={t.addCode} placeholder="ABCD-EFGH" autoComplete="off" onChange={({ value }) => setCode(String(value ?? ''))} />}
             </Form>
-            <div className="flex flex-wrap items-center gap-2">
+            <Actions target={footer}>
+                {pairing && <ActionButton label={withCode ? t.pairWithApproval : t.pairWithCode} variant="link" onClick={() => setWithCode((was) => !was)} />}
                 {withCode
                     ? <LoadingButton label={t.addConnect} variant="primary" disabled={!url.trim() || code.trim().length < 8} onClick={() => onConnect(addressOf(url), code.trim())} />
                     : (
@@ -298,25 +313,26 @@ function ExistingRunner({ t, name, nameField, pairing, onAdded, onError, onConne
                             disabled={!url.trim()}
                             onClick={async () => {
                                 setEnded(null);
+                                onClearError();
                                 try {
                                     const address = addressOf(url);
-                                    setRequest(await pairing!.start({ name: name.trim() || new URL(address).hostname, url: address }));
+                                    setRequest(await pairing!.start({ name: hostOf(address), url: address }));
                                 } catch (failure) {
                                     onError(failure);
                                 }
                             }}
                         />
                     )}
-                {pairing && <ActionButton label={withCode ? t.pairWithApproval : t.pairWithCode} variant="link" onClick={() => setWithCode((was) => !was)} />}
-            </div>
+            </Actions>
         </div>
     );
 }
 
 const PHASES: InstallPhase[] = ['check', 'docker', 'files', 'start', 'agent', 'health', 'pair', 'tls', 'done'];
 
-function AutomaticInstall({ t, localKeys, install, onDone, onError }: {
+function AutomaticInstall({ t, footer, localKeys, install, onDone, onError }: {
     t: RunnerUiTexts;
+    footer: HTMLElement | null;
     localKeys: boolean;
     install: (domain: string, access: RunnerSshAccess, onProgress: (progress: { line: string; phase?: InstallPhase }) => void) => Promise<RunnerEntry>;
     onDone: (entry: RunnerEntry) => void | Promise<void>;
@@ -352,7 +368,7 @@ function AutomaticInstall({ t, localKeys, install, onDone, onError }: {
                 </div>
             )}
             {log.length > 0 && <pre className="max-h-64 overflow-auto rounded-md bg-muted p-2 text-xs">{log.slice(-200).join('\n')}</pre>}
-            <div>
+            <Actions target={footer}>
                 <LoadingButton
                     label={running ? t.addInstalling : t.addInstall}
                     variant="primary"
@@ -378,7 +394,7 @@ function AutomaticInstall({ t, localKeys, install, onDone, onError }: {
                         }
                     }}
                 />
-            </div>
+            </Actions>
         </div>
     );
 }

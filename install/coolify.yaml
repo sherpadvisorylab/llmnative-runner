@@ -2,10 +2,10 @@
 # Then, in the terminal of the service: node src/cli.ts pair
 services:
   runner:
-    image: ghcr.io/sherpadvisorylab/llmnative-runner:1.1.0
+    image: ghcr.io/sherpadvisorylab/llmnative-runner:1.1.1
     restart: unless-stopped
     environment:
-      AGENT_IMAGE: ghcr.io/sherpadvisorylab/llmnative-runner-agent:1.1.0
+      AGENT_IMAGE: ghcr.io/sherpadvisorylab/llmnative-runner-agent:1.1.1
       PUBLIC_URL: ${SERVICE_FQDN_RUNNER_8080}
       MAX_CHATS: ${MAX_CHATS:-6}
     volumes:

@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 Images and npm package share the version.
 
+## [1.1.1] - 2026-11-26
+
+From the first try of 1.1.0 in a browser.
+
+### Fixed
+- Console: «Sign in» works with a token the password manager of the browser filled in (it was disabled until the
+  token was typed).
+- Adding a runner: one call lost while waiting for the approval (a cold start of the backend) no longer shows an
+  error; only five in a row do.
+
+### Changed
+- Adding a runner asks no name: the runner is named after its address.
+- The buttons of each step are in the footer of the modal, on the right.
+
 ## [1.1.0] - 2026-11-26
 
 ### Added
