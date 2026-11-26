@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 Images and npm package share the version.
 
-## [Unreleased]
+## [1.3.0] - 2026-11-26
 
 ### Added
 - Modules (`server/src/modules.ts`): what a product builds on the runner without forking it. An image
