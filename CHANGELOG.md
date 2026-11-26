@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 Images and npm package share the version.
 
-## [Unreleased]
+## [1.0.2] - 2026-11-26
 
 From the first automatic installation on a new VPS (161.97.140.94).
 
