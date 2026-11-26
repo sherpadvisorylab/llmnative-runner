@@ -6,7 +6,7 @@ import { ChatError, chatFilesOf } from './chats.ts';
 import { CompletionError, completionRequestOf, offerOf } from './completions.ts';
 import { readMachine } from './machine.ts';
 import { CLAUDE_CODE, accountKey } from './providers.ts';
-import { PERMISSIONS, RegistryError, type KeyRecord, type Permission } from './registry.ts';
+import { PERMISSIONS, RegistryError, inProject, type KeyRecord, type Permission } from './registry.ts';
 import type { Runtime } from './runtime.ts';
 
 // The HTTP side of the runner: API v1 (JSON, `Authorization: Bearer <key>`) and the console.
@@ -17,6 +17,7 @@ import type { Runtime } from './runtime.ts';
 //   POST /v1/admin/pairing                               (admin token) a new pairing code
 //   GET  /v1/admin/pairing/requests                      (admin token) the requests waiting
 //   POST /v1/admin/pairing/requests/<code>/approve|deny  (admin token) the answer
+//   PUT  /v1/admin/keys/<id>/project                     (admin token) the project of a platform key (null: every tenant)
 //   GET  /v1/platform/status                             (platform) version, load, machine, tenants
 //   GET|POST /v1/platform/tenants, DELETE …/<id>         (platform) tenants
 //   GET|POST /v1/platform/tenants/<id>/keys, DELETE …/<key>  (platform) project keys of a tenant
@@ -29,6 +30,8 @@ import type { Runtime } from './runtime.ts';
 //   POST /v1/internal/<tenant>/chats/<id>/tool           (token of the chat) a call of a tool, from its container
 //   GET  /console/…                                      the console (admin token)
 // The tenant of a project key is its own; a platform key (or the admin token) names one with `X-Runner-Tenant`.
+// A platform key of a project sees, makes and names only the tenants of its project (`<project>`, `<project>-…`):
+// any other is answered as missing.
 // The person: `X-Runner-User`, with the permission `act-as-user` for a project key. Errors: `{ error }` with
 // 400 invalid, 401 bad token|expired, 403 forbidden, 404 not found, 409 no-provider|no-credit, 429 busy, 502, 504.
 
@@ -117,6 +120,14 @@ export function createRunnerServer(runtime: Runtime, options: ServerOptions = {}
         if (caller.kind === 'project') throw new HttpError(403, 'forbidden');
     };
 
+    /** Whether the caller may see a tenant: the admin and project-less platform keys every one, a project key its own. */
+    const owns = (caller: Caller, tenant: string) => {
+        if (caller.kind === 'admin') return true;
+        if (caller.kind === 'project') return caller.key.tenant === tenant;
+        return !caller.key.project || inProject(caller.key.project, tenant);
+    };
+    const tenantsOf = (caller: Caller) => runtime.registry.tenants().filter((tenant) => owns(caller, tenant.id));
+
     const can = (caller: Caller, permission: Permission) => caller.kind !== 'project' || caller.key.permissions.includes(permission);
     const need = (caller: Caller, permission: Permission) => {
         if (!can(caller, permission)) throw new HttpError(403, 'forbidden');
@@ -125,7 +136,7 @@ export function createRunnerServer(runtime: Runtime, options: ServerOptions = {}
     /** The tenant and person a request is for. */
     function scopeOf(request: IncomingMessage, caller: Caller): Scope {
         const tenant = caller.kind === 'project' ? caller.key.tenant! : header(request, 'x-runner-tenant');
-        if (!tenant || !runtime.registry.tenant(tenant)) throw new HttpError(404, 'no-tenant');
+        if (!tenant || !runtime.registry.tenant(tenant) || !owns(caller, tenant)) throw new HttpError(404, 'no-tenant');
         const user = header(request, 'x-runner-user');
         if (user !== undefined) {
             if (!USER_ID.test(user)) throw new HttpError(400, 'invalid user');
@@ -146,13 +157,16 @@ export function createRunnerServer(runtime: Runtime, options: ServerOptions = {}
                 ...(runtime.config.publicUrl ? { url: runtime.config.publicUrl } : {}),
                 load: runtime.load(),
                 machine: await readMachine(),
-                tenants: runtime.registry.tenants().map((tenant) => ({ ...tenant, usersWithAccounts: runtime.usersWithAccounts(tenant.id) })),
+                ...(caller.kind === 'platform' && caller.key.project ? { project: caller.key.project } : {}),
+                tenants: tenantsOf(caller).map((tenant) => ({ ...tenant, usersWithAccounts: runtime.usersWithAccounts(tenant.id) })),
             });
         }
         if (what === 'tenants') {
-            if (!id && request.method === 'GET') return send(response, 200, { tenants: runtime.registry.tenants() });
+            if (!id && request.method === 'GET') return send(response, 200, { tenants: tenantsOf(caller) });
+            if (id && !owns(caller, id)) throw new HttpError(404, sub === 'keys' ? 'no-tenant' : 'not found');
             if (!id && request.method === 'POST') {
                 const body = await json(request);
+                if (!owns(caller, String(body.id ?? ''))) throw new HttpError(403, 'outside project');
                 const tenant = runtime.registry.createTenant(String(body.id ?? ''), typeof body.name === 'string' ? body.name : undefined);
                 // Its first key, when asked: what a platform gives the backend of that tenant.
                 const permissions = Array.isArray(body.keyPermissions) ? body.keyPermissions.map(String) as Permission[] : undefined;
@@ -187,9 +201,12 @@ export function createRunnerServer(runtime: Runtime, options: ServerOptions = {}
             }
         }
         if (what === 'keys') {
-            if (!id && request.method === 'GET') return send(response, 200, { keys: runtime.registry.keys({ kind: 'platform' }) });
+            // A platform key of a project sees only the platform keys of its project; one without, all of them.
+            const project = caller.kind === 'platform' ? caller.key.project : undefined;
+            const visible = runtime.registry.keys({ kind: 'platform', ...(project ? { project } : {}) });
+            if (!id && request.method === 'GET') return send(response, 200, { keys: visible });
             if (id && request.method === 'DELETE') {
-                const removed = runtime.registry.revokeKey(id);
+                const removed = visible.some((key) => key.id === id) && runtime.registry.revokeKey(id);
                 return send(response, removed ? 200 : 404, removed ? { removed } : { error: 'not found' });
             }
         }
@@ -355,14 +372,14 @@ export function createRunnerServer(runtime: Runtime, options: ServerOptions = {}
 
             if (area === 'pair' && !rest.length && request.method === 'POST') {
                 const body = await json(request);
-                const made = runtime.registry.pair(String(body.code ?? ''), typeof body.name === 'string' ? body.name : undefined);
-                log('paired', { key: made.record.id, name: made.record.name });
+                const made = runtime.registry.pair(String(body.code ?? ''), typeof body.name === 'string' ? body.name : undefined, typeof body.project === 'string' ? body.project : undefined);
+                log('paired', { key: made.record.id, name: made.record.name, ...(made.record.project ? { project: made.record.project } : {}) });
                 return send(response, 200, { key: made.key, record: made.record, version: runtime.config.version });
             }
             if (area === 'pair' && rest[0] === 'requests' && rest.length === 1 && request.method === 'POST') {
                 const body = await json(request);
                 const forwarded = header(request, 'x-forwarded-for')?.split(',')[0]?.trim();
-                const made = runtime.registry.requestPairing(typeof body.name === 'string' ? body.name : '', forwarded || request.socket.remoteAddress || undefined);
+                const made = runtime.registry.requestPairing(typeof body.name === 'string' ? body.name : '', forwarded || request.socket.remoteAddress || undefined, typeof body.project === 'string' ? body.project : undefined);
                 const base = runtime.config.publicUrl ?? `https://${header(request, 'host') ?? 'localhost'}`;
                 log('pairing requested', { from: forwarded || request.socket.remoteAddress });
                 return send(response, 201, { ...made, approveUrl: `${base}/console/?approve=${encodeURIComponent(made.code)}`, interval: 2 });
@@ -398,8 +415,14 @@ export function createRunnerServer(runtime: Runtime, options: ServerOptions = {}
                 }
                 if (rest[0] === 'pairing' && rest[1] === 'requests' && rest.length === 4 && (rest[3] === 'approve' || rest[3] === 'deny') && request.method === 'POST') {
                     const answered = runtime.registry.answerPairing(rest[2], rest[3] === 'approve');
-                    log(rest[3] === 'approve' ? 'pairing approved' : 'pairing denied', { name: answered.name });
+                    log(rest[3] === 'approve' ? 'pairing approved' : 'pairing denied', { name: answered.name, ...(answered.project ? { project: answered.project } : {}) });
                     return send(response, 200, { request: answered });
+                }
+                if (rest[0] === 'keys' && rest.length === 3 && rest[2] === 'project' && request.method === 'PUT') {
+                    const body = await json(request);
+                    const record = runtime.registry.setKeyProject(rest[1], body.project === null ? null : String(body.project ?? ''));
+                    log('key project set', { key: record.id, project: record.project ?? null });
+                    return send(response, 200, { record });
                 }
                 throw new HttpError(404, 'not found');
             }

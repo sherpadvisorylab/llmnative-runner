@@ -8,6 +8,8 @@ info:
     the admin token of the machine, a platform key (`rk_platform_…`, from pairing) or a project key of a tenant (`rk_…`).
     A platform key (or the admin token) names the tenant with `X-Runner-Tenant`. The person a request is for is
     `X-Runner-User` (with the permission `act-as-user` for a project key). Errors are `{ "error": "<code>" }`.
+    A platform key paired with a `project` owns only the tenants `<project>` and `<project>-<tenant>`: any other is
+    answered as missing (403 `outside project` when it tries to make one).
 servers:
   - url: https://runner.example.com
 components:
@@ -42,6 +44,7 @@ components:
         id: { type: string }
         kind: { type: string, enum: [platform, project] }
         tenant: { type: string }
+        project: { type: string, description: 'Platform keys: the project whose tenants it owns (<project>, <project>-…); none, every tenant' }
         name: { type: string }
         permissions: { type: array, items: { type: string, enum: [complete, chat, 'chat:tools', accounts, 'accounts:tenant', act-as-user, keys] } }
         createdAt: { type: string, format: date-time }
@@ -68,7 +71,7 @@ paths:
     post:
       security: []
       summary: A pairing code (printed by the installer) gives a platform key, shown once
-      requestBody: { content: { application/json: { schema: { type: object, properties: { code: { type: string }, name: { type: string } }, required: [code] } } } }
+      requestBody: { content: { application/json: { schema: { type: object, properties: { code: { type: string }, name: { type: string }, project: { type: string, pattern: '^[a-z0-9]{1,32}$', description: 'The project the platform key owns the tenants of (<project>, <project>-…); none, every tenant' } }, required: [code] } } } }
       responses:
         '200': { description: The key, content: { application/json: { schema: { type: object, properties: { key: { type: string }, record: { $ref: '#/components/schemas/Key' }, version: { type: string } } } } } }
         '401': { description: bad code }
@@ -77,7 +80,7 @@ paths:
     post:
       security: []
       summary: A platform asks to connect (device flow); the admin approves it in the console at approveUrl
-      requestBody: { content: { application/json: { schema: { type: object, properties: { name: { type: string } } } } } }
+      requestBody: { content: { application/json: { schema: { type: object, properties: { name: { type: string }, project: { type: string, pattern: '^[a-z0-9]{1,32}$', description: 'The project the platform key owns the tenants of (<project>, <project>-…); none, every tenant' } } } } } }
       responses:
         '201': { description: '{ request (secret of the platform), code (shown on both sides), approveUrl, expiresAt, interval }' }
         '429': { description: busy (too many requests waiting) }
@@ -91,7 +94,13 @@ paths:
   /v1/admin/pairing/requests:
     get:
       summary: (admin token) The pairing requests waiting
-      responses: { '200': { description: '{ requests: [{ code, name, from?, createdAt, expiresAt }] }' } }
+      responses: { '200': { description: '{ requests: [{ code, name, project?, from?, createdAt, expiresAt }] }' } }
+  /v1/admin/keys/{key}/project:
+    put:
+      summary: (admin token) The project of a platform key; null, every tenant (as keys made before 1.2)
+      parameters: [{ name: key, in: path, required: true, schema: { type: string } }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { project: { type: [string, 'null'] } }, required: [project] } } } }
+      responses: { '200': { description: '{ record }' }, '400': { description: invalid project }, '404': { description: not found } }
   /v1/admin/pairing/requests/{code}/{answer}:
     post:
       summary: (admin token) Approves or refuses a pairing request

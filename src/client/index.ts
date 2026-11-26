@@ -24,12 +24,14 @@ export type RunnerModels = {
 };
 
 export type RunnerTenant = { id: string; name: string; createdAt: string; usersWithAccounts?: number };
-export type RunnerKey = { id: string; kind: 'platform' | 'project'; tenant?: string; name: string; permissions: RunnerPermission[]; createdAt: string; expiresAt: string | null };
+export type RunnerKey = { id: string; kind: 'platform' | 'project'; tenant?: string; /** Platform keys: the project whose tenants (`<project>`, `<project>-…`) it owns. */ project?: string; name: string; permissions: RunnerPermission[]; createdAt: string; expiresAt: string | null };
 
 export type RunnerStatus = {
     version: string;
     agentImage: string;
     url?: string;
+    /** The project of the platform key asking: the tenants listed are its own only. */
+    project?: string;
     load: { chats: number; answering: number; completions: number; maxChats: number };
     machine: { totalBytes: number; availableBytes: number; cpus: number };
     tenants: RunnerTenant[];
@@ -38,7 +40,7 @@ export type RunnerStatus = {
 /** A pairing request made by a platform: `request` is its secret (keep it in the backend), `code` is shown on both sides. */
 export type RunnerPairingRequest = { request: string; code: string; approveUrl: string; expiresAt: string; interval: number };
 export type RunnerPairingPoll = { status: 'pending' | 'denied' | 'expired' } | { status: 'approved'; key: string; record: RunnerKey; version: string };
-export type RunnerPairingRequestView = { code: string; name: string; from?: string; createdAt: string; expiresAt: string };
+export type RunnerPairingRequestView = { code: string; name: string; project?: string; from?: string; createdAt: string; expiresAt: string };
 export type RunnerHealth = { ok: boolean; version: string; chats: number; answering: number; completions: number; maxChats: number };
 
 export type RunnerCompletionRequest = { provider: 'claude-code' | 'opencode-go'; model: string; prompt: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' };
@@ -141,16 +143,17 @@ export class RunnerClient {
     }
 
     /** A pairing code (printed by the installer) → a platform key, seen once. */
-    pair(code: string, name?: string): Promise<{ key: string; record: RunnerKey; version: string }> {
-        return this.request('POST', '/v1/pair', { code, ...(name ? { name } : {}) });
+    /** `project`: the platform key owns only the tenants of that project (`<project>`, `<project>-…`). */
+    pair(code: string, name?: string, project?: string): Promise<{ key: string; record: RunnerKey; version: string }> {
+        return this.request('POST', '/v1/pair', { code, ...(name ? { name } : {}), ...(project ? { project } : {}) });
     }
 
     /**
      * Asks to connect (device flow): the admin of the runner approves it in the console at `approveUrl`, where the
      * same `code` is shown; meanwhile `pollPairing(request)` every `interval` seconds, until it gives the key.
      */
-    requestPairing(name: string): Promise<RunnerPairingRequest> {
-        return this.request('POST', '/v1/pair/requests', { name });
+    requestPairing(name: string, project?: string): Promise<RunnerPairingRequest> {
+        return this.request('POST', '/v1/pair/requests', { name, ...(project ? { project } : {}) });
     }
 
     pollPairing(request: string): Promise<RunnerPairingPoll> {
@@ -172,6 +175,11 @@ export class RunnerClient {
 
     async answerPairing(code: string, approve: boolean): Promise<RunnerPairingRequestView> {
         return (await this.request<{ request: RunnerPairingRequestView }>('POST', `/v1/admin/pairing/requests/${encodeURIComponent(code)}/${approve ? 'approve' : 'deny'}`)).request;
+    }
+
+    /** The project of a platform key (null: every tenant, as keys made before 1.2). */
+    async setKeyProject(id: string, project: string | null): Promise<RunnerKey> {
+        return (await this.request<{ record: RunnerKey }>('PUT', `/v1/admin/keys/${encodeURIComponent(id)}/project`, { project })).record;
     }
 
     // ── Platform key ────────────────────────────────────────────────────────────────────────────────────────

@@ -112,9 +112,9 @@ export function installOverSsh(target: SshTarget, options: InstallOptions & { on
 }
 
 /** Installs and pairs at once: the platform key, seen once, to keep in the backend of the host. */
-export async function installAndPair(target: SshTarget, options: InstallOptions & { name?: string; onProgress?: (progress: InstallProgress) => void; fetch?: typeof fetch }) {
+export async function installAndPair(target: SshTarget, options: InstallOptions & { name?: string; /** The project the platform key owns the tenants of. */ project?: string; onProgress?: (progress: InstallProgress) => void; fetch?: typeof fetch }) {
     const installed = await installOverSsh(target, options);
-    const paired = await new RunnerClient({ url: installed.url, ...(options.fetch ? { fetch: options.fetch } : {}) }).pair(installed.pairingCode, options.name);
+    const paired = await new RunnerClient({ url: installed.url, ...(options.fetch ? { fetch: options.fetch } : {}) }).pair(installed.pairingCode, options.name, options.project);
     return { url: installed.url, hostFingerprint: installed.hostFingerprint, platformKey: paired.key, version: paired.version };
 }
 

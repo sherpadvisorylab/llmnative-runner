@@ -35,6 +35,18 @@ describe('the registry', () => {
         expect(registry.authenticate(third.key)).toBeUndefined();
     });
 
+    it('a platform key has a project with no hyphen; inProject is <project> or <project>-…', async () => {
+        const { inProject } = await import('../../../server/src/registry.ts');
+        const registry = fresh();
+        expect(registry.createKey({ kind: 'platform', project: 'crm' }).record.project).toBe('crm');
+        expect(() => registry.createKey({ kind: 'platform', project: 'my-crm' })).toThrow(RegistryError);
+        registry.createTenant('crm');
+        expect(() => registry.createKey({ kind: 'project', tenant: 'crm', project: 'crm' })).toThrow(RegistryError);
+        expect([inProject('crm', 'crm'), inProject('crm', 'crm-acme'), inProject('crm', 'crmx'), inProject('crm', 'cms-crm')]).toEqual([true, true, false, false]);
+        const code = registry.createPairing();
+        expect(registry.pair(code.code, 'studio', 'playbook').record.project).toBe('playbook');
+    });
+
     it('survives a restart: tenants and keys read back from its file', () => {
         const file = join(mkdtempSync(join(tmpdir(), 'runner-')), 'registry.json');
         const first = new Registry(file);

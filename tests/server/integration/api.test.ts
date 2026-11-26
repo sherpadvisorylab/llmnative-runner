@@ -110,6 +110,48 @@ describe('the runner over HTTP', () => {
         expect((await call('POST', '/v1/pair/requests/poll', { body: { request: asked.json.request } })).json).toEqual({ status: 'expired' });
     });
 
+    it('a platform of a project sees, makes and reaches only the tenants of its project', async () => {
+        const { call, adminToken, platformKey } = await start();
+        // Two projects on one runner, each paired with its project: by code, and by asking.
+        const { json: code } = await call('POST', '/v1/admin/pairing', { key: adminToken });
+        const crm = (await call('POST', '/v1/pair', { body: { code: code.code, name: 'crm', project: 'crm' } })).json;
+        expect(crm.record).toMatchObject({ kind: 'platform', project: 'crm' });
+        const asked = (await call('POST', '/v1/pair/requests', { body: { name: 'cms', project: 'cms' } })).json;
+        const waiting = (await call('GET', '/v1/admin/pairing/requests', { key: adminToken })).json.requests;
+        expect(waiting).toEqual([expect.objectContaining({ code: asked.code, project: 'cms' })]);
+        await call('POST', `/v1/admin/pairing/requests/${asked.code}/approve`, { key: adminToken });
+        const cms = (await call('POST', '/v1/pair/requests/poll', { body: { request: asked.request } })).json;
+        expect(cms.record.project).toBe('cms');
+        expect((await call('POST', '/v1/pair/requests', { body: { name: 'x', project: 'has-hyphen' } })).status).toBe(400);
+
+        // Its own tenants: <project> and <project>-<tenant>; another's is refused when made, missing otherwise.
+        expect((await call('POST', '/v1/platform/tenants', { key: crm.key, body: { id: 'crm-consuletica' } })).status).toBe(201);
+        const cmsTenant = (await call('POST', '/v1/platform/tenants', { key: cms.key, body: { id: 'cms-acme' } })).json;
+        expect((await call('POST', '/v1/platform/tenants', { key: crm.key, body: { id: 'cms-other' } })).status).toBe(403);
+        expect((await call('POST', '/v1/platform/tenants', { key: crm.key, body: { id: 'crmx' } })).status).toBe(403);
+        expect((await call('GET', '/v1/platform/tenants', { key: crm.key })).json.tenants.map((t: { id: string }) => t.id)).toEqual(['crm-consuletica']);
+        const status = (await call('GET', '/v1/platform/status', { key: crm.key })).json;
+        expect([status.project, status.tenants.map((t: { id: string }) => t.id)]).toEqual(['crm', ['crm-consuletica']]);
+        expect((await call('DELETE', '/v1/platform/tenants/cms-acme', { key: crm.key })).status).toBe(404);
+        expect((await call('GET', '/v1/platform/tenants/cms-acme/keys', { key: crm.key })).status).toBe(404);
+        expect((await call('POST', '/v1/platform/tenants/cms-acme/keys', { key: crm.key, body: {} })).status).toBe(404);
+        expect((await call('GET', '/v1/accounts', { key: crm.key, headers: { 'x-runner-tenant': 'cms-acme' } })).status).toBe(404);
+        expect((await call('GET', '/v1/accounts', { key: cms.key, headers: { 'x-runner-tenant': 'cms-acme' } })).status).toBe(200);
+        expect((await call('GET', '/v1/info', { key: cmsTenant.key })).json.tenant).toBe('cms-acme');
+
+        // Platform keys: a project sees and revokes only those of its project.
+        expect((await call('GET', '/v1/platform/keys', { key: crm.key })).json.keys.map((k: { name: string }) => k.name)).toEqual(['crm']);
+        expect((await call('DELETE', `/v1/platform/keys/${cms.record.id}`, { key: crm.key })).status).toBe(404);
+
+        // A key without a project (before 1.2) sees every tenant, until the admin gives it one.
+        expect((await call('GET', '/v1/platform/tenants', { key: platformKey })).json.tenants.map((t: { id: string }) => t.id).sort()).toEqual(['acme', 'cms-acme', 'crm-consuletica']);
+        const legacy = (await call('GET', '/v1/platform/keys', { key: adminToken })).json.keys.find((k: { name: string }) => k.name === 'cms');
+        expect((await call('PUT', `/v1/admin/keys/${legacy.id}/project`, { key: platformKey, body: { project: 'cms' } })).status).toBe(403);
+        expect((await call('PUT', `/v1/admin/keys/${legacy.id}/project`, { key: adminToken, body: { project: 'cms' } })).json.record.project).toBe('cms');
+        expect((await call('GET', '/v1/platform/tenants', { key: platformKey })).json.tenants.map((t: { id: string }) => t.id)).toEqual(['cms-acme']);
+        expect((await call('PUT', `/v1/admin/keys/${legacy.id}/project`, { key: adminToken, body: { project: null } })).json.record.project).toBeUndefined();
+    });
+
     it('each person has their own subscriptions: used for them only, never listed to others', async () => {
         const { call, tenantKey, fake } = await start();
         const ana = { key: tenantKey, headers: { 'x-runner-user': 'ana' } };

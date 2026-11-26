@@ -5,13 +5,20 @@ import { writeJson } from './accounts.ts';
 
 // The tenants of the runner, its keys and its pairing codes, in one JSON file of its data (0600). Keys are kept
 // as their hash only: a key is seen once, when it is made.
-//   - platform key (`rk_platform_…`): whoever connected the runner (a CMS, a studio): tenants and their keys;
+//   - platform key (`rk_platform_…`): whoever connected the runner (a CMS, a studio): tenants and their keys.
+//     A platform key of a project (`project`, e.g. `crm`) owns only the tenants of that project: `<project>` and
+//     `<project>-<tenant>`; several projects share a runner without seeing each other. A key without a project
+//     (made before 1.2) sees every tenant, until the admin gives it one;
 //   - project key (`rk_…`): one tenant, with its permissions (complete, chat, accounts…, act-as-user).
 // A pairing code (8 characters, 15 minutes, used once) gives a platform key: the installer prints one.
 // A pairing request is the same done from the platform (a device flow): it asks, the admin of the runner approves
 // in the console (the code shown on both sides), and the platform, asking again with its secret, gets the key.
 
 export const TENANT_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
+/** A project: no hyphen, so `<project>-<tenant>` names one project only. */
+export const PROJECT_ID = /^[a-z0-9]{1,32}$/;
+/** Whether a tenant is of a project: `<project>` itself or `<project>-…`. */
+export const inProject = (project: string, tenant: string) => tenant === project || tenant.startsWith(`${project}-`);
 export const PERMISSIONS = ['complete', 'chat', 'chat:tools', 'accounts', 'accounts:tenant', 'act-as-user', 'keys'] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 export const PAIRING_TTL_MS = 15 * 60_000;
@@ -29,6 +36,8 @@ export type KeyRecord = {
     id: string;
     kind: 'platform' | 'project';
     tenant?: string;
+    /** Platform keys: the project whose tenants it owns; none, every tenant (keys made before 1.2). */
+    project?: string;
     name: string;
     hash: string;
     permissions: Permission[];
@@ -40,7 +49,7 @@ export type KeyView = Omit<KeyRecord, 'hash'>;
 type State = { tenants: TenantRecord[]; keys: KeyRecord[]; pairing: Array<{ hash: string; expiresAt: string }> };
 
 /** A pairing request as the admin sees it: never its secret. */
-export type PairRequestView = { code: string; name: string; from?: string; createdAt: string; expiresAt: string };
+export type PairRequestView = { code: string; name: string; project?: string; from?: string; createdAt: string; expiresAt: string };
 type PairRequest = PairRequestView & { hash: string; status: 'pending' | 'approved' | 'denied' };
 export type PairPoll = { status: 'pending' | 'denied' | 'expired' } | { status: 'approved'; key: string; record: KeyView };
 
@@ -119,8 +128,9 @@ export class Registry {
     }
 
     /** A new key: its record, and the key itself, shown this once. */
-    createKey(input: { kind: 'platform' | 'project'; tenant?: string; name?: string; permissions?: Permission[]; expiresAt?: string | null }): { key: string; record: KeyView } {
+    createKey(input: { kind: 'platform' | 'project'; tenant?: string; project?: string; name?: string; permissions?: Permission[]; expiresAt?: string | null }): { key: string; record: KeyView } {
         if (input.kind === 'project' && (!input.tenant || !this.tenant(input.tenant))) throw new RegistryError('no-tenant', 404);
+        if (input.project !== undefined && (input.kind !== 'platform' || !PROJECT_ID.test(input.project))) throw new RegistryError('invalid project', 400);
         const permissions: Permission[] = input.kind === 'platform' ? [] : [...new Set<Permission>(input.permissions ?? ['complete', 'chat'])];
         if (!permissions.every((permission) => (PERMISSIONS as readonly string[]).includes(permission))) throw new RegistryError('invalid', 400);
         if (input.expiresAt && Number.isNaN(Date.parse(input.expiresAt))) throw new RegistryError('invalid', 400);
@@ -129,6 +139,7 @@ export class Registry {
             id: token(6),
             kind: input.kind,
             ...(input.kind === 'project' ? { tenant: input.tenant } : {}),
+            ...(input.project ? { project: input.project } : {}),
             name: (input.name ?? '').trim().slice(0, 100) || (input.kind === 'platform' ? 'platform' : 'project'),
             hash: hashOf(key),
             permissions,
@@ -140,8 +151,21 @@ export class Registry {
         return { key, record: keyView(record) };
     }
 
-    keys(filter: { kind?: 'platform' | 'project'; tenant?: string } = {}): KeyView[] {
-        return this.state.keys.filter((key) => (!filter.kind || key.kind === filter.kind) && (!filter.tenant || key.tenant === filter.tenant)).map(keyView);
+    keys(filter: { kind?: 'platform' | 'project'; tenant?: string; project?: string } = {}): KeyView[] {
+        return this.state.keys
+            .filter((key) => (!filter.kind || key.kind === filter.kind) && (!filter.tenant || key.tenant === filter.tenant) && (!filter.project || key.project === filter.project))
+            .map(keyView);
+    }
+
+    /** The admin gives a platform key its project (or takes it, with null): from then on it owns only those tenants. */
+    setKeyProject(id: string, project: string | null): KeyView {
+        const found = this.state.keys.find((key) => key.id === id && key.kind === 'platform');
+        if (!found) throw new RegistryError('not found', 404);
+        if (project !== null && !PROJECT_ID.test(project)) throw new RegistryError('invalid project', 400);
+        if (project === null) delete found.project;
+        else found.project = project;
+        this.save();
+        return keyView(found);
     }
 
     revokeKey(id: string, tenant?: string): boolean {
@@ -175,7 +199,8 @@ export class Registry {
     }
 
     /** A pairing code given back: a new platform key, or why not. */
-    pair(code: string, name?: string): { key: string; record: KeyView } {
+    pair(code: string, name?: string, project?: string): { key: string; record: KeyView } {
+        if (project !== undefined && !PROJECT_ID.test(project)) throw new RegistryError('invalid project', 400);
         if (this.now() < this.lockedUntil) throw new RegistryError('locked', 429);
         const hash = hashOf(normalCode(code));
         const entry = this.state.pairing.find((item) => item.hash === hash && Date.parse(item.expiresAt) > this.now());
@@ -189,7 +214,7 @@ export class Registry {
         }
         this.failures = 0;
         this.state.pairing = this.state.pairing.filter((item) => item !== entry);
-        return this.createKey({ kind: 'platform', name: name || 'paired' });
+        return this.createKey({ kind: 'platform', name: name || 'paired', ...(project ? { project } : {}) });
     }
 
     private liveRequests(): PairRequest[] {
@@ -198,7 +223,8 @@ export class Registry {
     }
 
     /** A platform asks to connect: a secret for it (to ask again), a code to show on both sides. */
-    requestPairing(name: string, from?: string): { request: string; code: string; expiresAt: string } {
+    requestPairing(name: string, from?: string, project?: string): { request: string; code: string; expiresAt: string } {
+        if (project !== undefined && !PROJECT_ID.test(project)) throw new RegistryError('invalid project', 400);
         const at = this.now();
         this.recent = this.recent.filter((time) => time > at - PAIR_REQUEST_TTL_MS);
         if (this.liveRequests().filter((item) => item.status === 'pending').length >= PAIR_REQUEST_MAX_PENDING || this.recent.length >= PAIR_REQUEST_MAX_RECENT) throw new RegistryError('busy', 429);
@@ -210,6 +236,7 @@ export class Registry {
             hash: hashOf(request),
             code,
             name: name.trim().slice(0, 80) || 'platform',
+            ...(project ? { project } : {}),
             ...(from ? { from: from.slice(0, 64) } : {}),
             createdAt: new Date(at).toISOString(),
             expiresAt,
@@ -220,7 +247,7 @@ export class Registry {
 
     /** The requests waiting for the admin. */
     pairingRequests(): PairRequestView[] {
-        return this.liveRequests().filter((item) => item.status === 'pending').map(({ code, name, from, createdAt, expiresAt }) => ({ code, name, ...(from ? { from } : {}), createdAt, expiresAt }));
+        return this.liveRequests().filter((item) => item.status === 'pending').map(({ code, name, project, from, createdAt, expiresAt }) => ({ code, name, ...(project ? { project } : {}), ...(from ? { from } : {}), createdAt, expiresAt }));
     }
 
     /** The admin answers a request, found by its code. */
@@ -229,7 +256,7 @@ export class Registry {
         const found = this.liveRequests().find((item) => item.status === 'pending' && normalCode(item.code) === wanted);
         if (!found) throw new RegistryError('not found', 404);
         found.status = approve ? 'approved' : 'denied';
-        return { code: found.code, name: found.name, ...(found.from ? { from: found.from } : {}), createdAt: found.createdAt, expiresAt: found.expiresAt };
+        return { code: found.code, name: found.name, ...(found.project ? { project: found.project } : {}), ...(found.from ? { from: found.from } : {}), createdAt: found.createdAt, expiresAt: found.expiresAt };
     }
 
     /** The platform asks again with its secret: approved, the key, once. */
@@ -240,6 +267,6 @@ export class Registry {
         if (found.status === 'pending') return { status: 'pending' };
         this.requests = this.requests.filter((item) => item !== found);
         if (found.status === 'denied') return { status: 'denied' };
-        return { status: 'approved', ...this.createKey({ kind: 'platform', name: found.name }) };
+        return { status: 'approved', ...this.createKey({ kind: 'platform', name: found.name, ...(found.project ? { project: found.project } : {}) }) };
     }
 }

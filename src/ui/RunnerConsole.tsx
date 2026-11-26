@@ -63,6 +63,7 @@ export function RunnerConsole({ client, locale, texts, onSignOut, approve }: Run
                     </div>
                 </div>
             </Card>
+            <Platforms client={client} t={t} />
             <Card title={t.consoleTenants}>
                 <div className="flex flex-col gap-3">
                     {shownKey && <Alert variant="warning" onClose={() => setShownKey(null)}><span className="break-all">{fill(t.consoleKeyShown, { key: shownKey })}</span></Alert>}
@@ -90,6 +91,66 @@ export function RunnerConsole({ client, locale, texts, onSignOut, approve }: Run
                 </div>
             </Card>
         </div>
+    );
+}
+
+/** The platforms connected, with their project: a key without one sees every tenant until it is given one. */
+function Platforms({ client, t }: { client: RunnerClient; t: RunnerUiTexts }) {
+    const [keys, setKeys] = useState<RunnerKey[] | null>(null);
+    const [projects, setProjects] = useState<Record<string, string>>({});
+    const [removing, setRemoving] = useState<RunnerKey | null>(null);
+    const load = useCallback(async () => setKeys(await client.platform.platformKeys()), [client]);
+    useEffect(() => {
+        void load();
+    }, [load]);
+    return (
+        <Card title={t.consolePlatforms} loading={!keys} loaderMinHeight={60}>
+            <div className="flex flex-col gap-3">
+                <p className="text-sm text-muted-foreground">{t.consolePlatformsHint}</p>
+                {keys && !keys.length && <p className="text-sm text-muted-foreground">{t.consolePlatformsEmpty}</p>}
+                {keys?.map((key) => {
+                    const value = projects[key.id] ?? key.project ?? '';
+                    return (
+                        <Form key={key.id} appearance="empty" showNotice={false} onSubmit={() => false}>
+                            <div className="grid gap-2 rounded-md border border-border p-3 sm:grid-cols-[1fr_12rem_auto] sm:items-end">
+                                <div className="flex flex-col gap-1">
+                                    <span className="font-medium">{key.name}</span>
+                                    <span className="text-xs text-muted-foreground">{when(key.createdAt)} · {key.project ?? t.consolePlatformAll}</span>
+                                </div>
+                                <TextInput name={`project-${key.id}`} label={t.consolePlatformProject} value={value} placeholder="crm" onChange={({ value: next }) => setProjects((all) => ({ ...all, [key.id]: String(next ?? '').trim() }))} />
+                                <div className="flex gap-2">
+                                    <LoadingButton
+                                        label={t.consolePlatformSave}
+                                        variant="outline-primary"
+                                        disabled={value === (key.project ?? '') || (value !== '' && !/^[a-z0-9]{1,32}$/.test(value))}
+                                        onClick={async () => {
+                                            await client.setKeyProject(key.id, value || null);
+                                            await load();
+                                        }}
+                                    />
+                                    <ActionButton icon="trash" label={t.consoleRevoke} variant="outline-danger" onClick={() => setRemoving(key)} />
+                                </div>
+                            </div>
+                        </Form>
+                    );
+                })}
+            </div>
+            {removing && (
+                <ModalYesNo
+                    title={t.consoleRevoke}
+                    danger
+                    onClose={() => setRemoving(null)}
+                    onYes={async () => {
+                        await client.platform.revokePlatformKey(removing.id);
+                        setRemoving(null);
+                        await load();
+                        return true;
+                    }}
+                >
+                    {fill(t.consolePlatformRevokeConfirm, { name: removing.name })}
+                </ModalYesNo>
+            )}
+        </Card>
     );
 }
 
@@ -175,6 +236,7 @@ function PairingRequests({ client, t, approve, onAnswered }: { client: RunnerCli
                             {match && <Badge variant="primary">{t.consoleRequestMatch}</Badge>}
                             <div className="font-mono text-2xl font-semibold tracking-widest">{request.code}</div>
                             <p className="text-sm">{fill(t.consoleRequestFrom, { name: request.name, from: request.from ?? '?', at: when(request.createdAt) })}</p>
+                            <p className="text-sm text-muted-foreground">{request.project ? fill(t.consoleRequestProject, { project: request.project }) : t.consoleRequestAll}</p>
                             <div className="flex flex-wrap gap-2">
                                 <LoadingButton label={t.consoleApprove} variant="primary" onClick={() => answer(true)} />
                                 <LoadingButton label={t.consoleDeny} variant="outline-danger" onClick={() => answer(false)} />
