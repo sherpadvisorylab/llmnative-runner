@@ -28,7 +28,7 @@ components:
     Account:
       type: object
       properties:
-        provider: { type: string, enum: [claude-code, opencode-go, opencode] }
+        provider: { type: string, enum: [claude-code, opencode-go, opencode, anthropic, openai, gemini, mistral, deepseek, openrouter] }
         id: { type: string }
         label: { type: string }
         at: { type: string, format: date-time }
@@ -166,8 +166,8 @@ paths:
       responses: { '200': { description: '{ connected, account }' }, '409': { description: 'refused | no-session | no-token' } }
   /v1/accounts/{provider}:
     post:
-      summary: A key (opencode-go, opencode), or a token made with claude setup-token (claude-code)
-      parameters: [{ name: provider, in: path, required: true, schema: { enum: [claude-code, opencode-go, opencode] } }, { $ref: '#/components/parameters/tenant' }, { $ref: '#/components/parameters/user' }]
+      summary: A key (opencode-go, opencode, or the API key of a provider by use opencode runs), or a token made with claude setup-token (claude-code)
+      parameters: [{ name: provider, in: path, required: true, schema: { enum: [claude-code, opencode-go, opencode, anthropic, openai, gemini, mistral, deepseek, openrouter] } }, { $ref: '#/components/parameters/tenant' }, { $ref: '#/components/parameters/user' }]
       requestBody: { content: { application/json: { schema: { type: object, properties: { key: { type: string }, token: { type: string }, label: { type: string } } } } } }
       responses: { '201': { description: '{ account }' } }
   /v1/accounts/{provider}/{id}:
@@ -189,7 +189,7 @@ paths:
     post:
       summary: (complete) One answer, no tools
       parameters: [{ $ref: '#/components/parameters/tenant' }, { $ref: '#/components/parameters/user' }]
-      requestBody: { content: { application/json: { schema: { type: object, properties: { provider: { enum: [claude-code, opencode-go] }, model: { type: string }, prompt: { type: string, maxLength: 200000 }, effort: { enum: [low, medium, high, xhigh, max] } }, required: [provider, model, prompt] } } } }
+      requestBody: { content: { application/json: { schema: { type: object, properties: { provider: { enum: [claude-code, opencode-go, opencode, anthropic, openai, gemini, mistral, deepseek, openrouter] }, model: { type: string, description: 'For opencode, bare or as opencode names it (gemini → google/<model>)' }, prompt: { type: string, maxLength: 200000 }, effort: { enum: [low, medium, high, xhigh, max] } }, required: [provider, model, prompt] } } } }
       responses:
         '200': { description: '{ text, usage? }' }
         '409': { description: 'no-provider | no-credit (with until)', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }

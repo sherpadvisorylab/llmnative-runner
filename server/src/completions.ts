@@ -1,13 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import type { ChatHost, Keys } from './chats.ts';
-import { OPENCODE_GO } from './accounts.ts';
-import { CLAUDE_CODE, accountKey, candidateEnv, connectedAccounts, outOfCredit, type Candidate } from './providers.ts';
+import { KEY_PROVIDERS, OPENCODE_GO, OPENCODE_ZEN } from './accounts.ts';
+import { CLAUDE_CODE, accountKey, candidateEnv, connectedAccounts, opencodeModel, outOfCredit, type Candidate } from './providers.ts';
 
-// One answer with a subscription (Claude Code or OpenCode Go): the prompt in, the text out. No tool: a short-lived
+// One answer with an account of the runner (Claude Code, OpenCode Go/Zen, or an API key opencode runs): the prompt in, the text out. No tool: a short-lived
 // container of the image of the harnesses, removed at once. It runs with the accounts of the person (when the client
 // says who asks), then those of the tenant, in their order; one out of credit is skipped until its reset.
 
-export const COMPLETION_PROVIDERS = [CLAUDE_CODE, OPENCODE_GO] as const;
+export const COMPLETION_PROVIDERS = [CLAUDE_CODE, OPENCODE_GO, OPENCODE_ZEN, ...KEY_PROVIDERS] as const;
 export type CompletionProvider = (typeof COMPLETION_PROVIDERS)[number];
 /** The models of Claude Code a client names: its aliases (a full id of a Claude model is taken too). */
 export const CLAUDE_CODE_MODELS = ['haiku', 'sonnet', 'opus'] as const;
@@ -50,8 +50,6 @@ export class CompletionError extends Error {
     }
 }
 
-/** The model of OpenCode Go as opencode takes it: `opencode-go/<model>`. */
-const opencodeModel = (model: string) => (model.startsWith(`${OPENCODE_GO}/`) ? model : `${OPENCODE_GO}/${model}`);
 
 /** The request of a client, checked: undefined when it is not one. */
 export function completionRequestOf(body: unknown): CompletionRequest | undefined {
@@ -143,7 +141,9 @@ export function offerOf(keys: Keys, exhausted: (key: string) => boolean = () => 
         const accounts = connected[id] ?? [];
         return {
             id,
-            models: id === CLAUDE_CODE ? [...CLAUDE_CODE_MODELS] : [...OPENCODE_GO_MODELS],
+            // The subscriptions serve their list; a provider by use any of its models, named by the client.
+            models: id === CLAUDE_CODE ? [...CLAUDE_CODE_MODELS] : id === OPENCODE_GO ? [...OPENCODE_GO_MODELS] : [],
+            kind: (KEY_PROVIDERS as readonly string[]).includes(id) ? 'usage' : 'subscription',
             accounts: accounts.length,
             available: accounts.filter((account) => !exhausted(accountKey(id, account))).length,
         };
@@ -180,7 +180,7 @@ export class ServerCompletions {
         const container = `runner-complete-${this.deps.tenant}-${randomBytes(4).toString('hex')}`;
         const began = this.now();
         const claude = request.provider === CLAUDE_CODE;
-        const model = claude ? request.model : opencodeModel(request.model);
+        const model = claude ? request.model : opencodeModel(request.provider, request.model);
         let lastUntil: number | undefined;
         try {
             await this.deps.host.start(container, this.deps.image, this.deps.tenant).catch(() => {

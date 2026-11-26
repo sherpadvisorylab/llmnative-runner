@@ -12,6 +12,14 @@ export type Candidate = Offer & { name: string; account: Account };
 
 export const CLAUDE_CODE = 'claude-code';
 
+/** How opencode names each provider of the runner (the others by their own id). */
+const OPENCODE_IDS: Record<string, string> = { gemini: 'google' };
+/** A model as opencode takes it: `<provider of opencode>/<model>` (a model already named so is kept). */
+export const opencodeModel = (provider: string, model: string) => {
+    const prefix = OPENCODE_IDS[provider] ?? provider;
+    return model.startsWith(`${prefix}/`) ? model : `${prefix}/${model}`;
+};
+
 /** What a provider needs in the environment to be connected (all of them). */
 const NEEDS: Record<string, string[]> = {
     [CLAUDE_CODE]: ['CLAUDE_CODE_OAUTH_TOKEN'],

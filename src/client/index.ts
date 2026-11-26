@@ -5,7 +5,10 @@
 // and its pages use `RunnerClient` against that backend. The console of the runner and a personal app with a key of
 // its own use `RunnerClient` directly.
 
-export type RunnerProvider = 'claude-code' | 'opencode-go' | 'opencode';
+/** The providers paid by use whose API key the runner keeps and opencode runs (ids of @llmnative/react). */
+export const RUNNER_KEY_PROVIDERS = ['anthropic', 'openai', 'gemini', 'mistral', 'deepseek', 'openrouter'] as const;
+export type RunnerKeyProvider = (typeof RUNNER_KEY_PROVIDERS)[number];
+export type RunnerProvider = 'claude-code' | 'opencode-go' | 'opencode' | RunnerKeyProvider;
 export type RunnerPermission = 'complete' | 'chat' | 'chat:tools' | 'accounts' | 'accounts:tenant' | 'act-as-user' | 'keys';
 
 export type RunnerAccount = {
@@ -20,7 +23,8 @@ export type RunnerAccount = {
 };
 
 export type RunnerModels = {
-    providers: Array<{ id: 'claude-code' | 'opencode-go'; models: string[]; accounts: number; available: number; yours: number; tenant: number }>;
+    /** `models`: the list a subscription serves; empty for a provider by use, which runs any model the client names. */
+    providers: Array<{ id: RunnerProvider; kind: 'subscription' | 'usage'; models: string[]; accounts: number; available: number; yours: number; tenant: number }>;
 };
 
 export type RunnerTenant = { id: string; name: string; createdAt: string; usersWithAccounts?: number };
@@ -43,7 +47,7 @@ export type RunnerPairingPoll = { status: 'pending' | 'denied' | 'expired' } | {
 export type RunnerPairingRequestView = { code: string; name: string; project?: string; from?: string; createdAt: string; expiresAt: string };
 export type RunnerHealth = { ok: boolean; version: string; chats: number; answering: number; completions: number; maxChats: number };
 
-export type RunnerCompletionRequest = { provider: 'claude-code' | 'opencode-go'; model: string; prompt: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' };
+export type RunnerCompletionRequest = { provider: RunnerProvider; model: string; prompt: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' };
 export type RunnerCompletion = { text: string; usage?: { inputTokens: number; outputTokens: number } };
 
 export type RunnerChatTool = { name: string; description: string; inputSchema: Record<string, unknown>; endsTurn?: boolean };
@@ -208,7 +212,8 @@ export class RunnerClient {
         /** A token made elsewhere with `claude setup-token`. */
         addClaudeToken: async (token: string, label?: string): Promise<RunnerAccount> =>
             (await this.request<{ account: RunnerAccount }>('POST', '/v1/accounts/claude-code', { token, ...(label ? { label } : {}) })).account,
-        addKey: async (provider: 'opencode-go' | 'opencode', key: string, label?: string): Promise<RunnerAccount> =>
+        /** A key: OpenCode Go/Zen, or the API key of a provider by use the runner keeps (opencode runs it). */
+        addKey: async (provider: Exclude<RunnerProvider, 'claude-code'>, key: string, label?: string): Promise<RunnerAccount> =>
             (await this.request<{ account: RunnerAccount }>('POST', `/v1/accounts/${provider}`, { key, ...(label ? { label } : {}) })).account,
         remove: async (provider: RunnerProvider, id: string): Promise<boolean> =>
             (await this.request<{ removed: boolean }>('DELETE', `/v1/accounts/${provider}/${encodeURIComponent(id)}`)).removed,

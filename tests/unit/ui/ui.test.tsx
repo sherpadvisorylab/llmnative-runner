@@ -42,6 +42,21 @@ describe('My subscriptions', () => {
         await waitFor(() => expect(onChange).toHaveBeenCalled());
     });
 
+    it('a tenant adds the API key of a provider by use, chosen in the list', async () => {
+        const client = fakeClient([]);
+        render(<RunnerAccounts client={client} scope="tenant" />, { wrapper: wrap });
+        await screen.findByText('No subscription connected.');
+        await act(async () => { fireEvent.click(screen.getByText('Add a key')); });
+        const input = await waitFor(() => {
+            const found = document.querySelector('input[name="key"]');
+            if (!found) throw new Error(`no key field: ${document.body.textContent}`);
+            return found as HTMLInputElement;
+        });
+        fireEvent.change(input, { target: { value: 'go-key-123456' } });
+        await act(async () => { fireEvent.click(screen.getByText('Add')); });
+        await waitFor(() => expect(client.accounts.addKey).toHaveBeenCalledWith('opencode-go', 'go-key-123456', undefined));
+    });
+
     it('speaks Italian when asked', async () => {
         render(<RunnerAccounts client={fakeClient([])} scope="user" locale="it-IT" />, { wrapper: wrap });
         expect(await screen.findByText('I miei abbonamenti')).toBeTruthy();

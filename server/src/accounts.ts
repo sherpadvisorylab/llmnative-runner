@@ -10,12 +10,23 @@ import { CLAUDE_CODE } from './providers.ts';
 
 export const OPENCODE_GO = 'opencode-go';
 export const OPENCODE_ZEN = 'opencode';
-/** The providers of the runner and the variable each harness reads. */
+/**
+ * The providers of the runner and the variable each harness reads: the subscriptions (Claude Code, OpenCode Go/Zen)
+ * and the API keys of the providers of @llmnative/react, which opencode runs on the runner (by their ids there).
+ */
 export const ACCOUNT_PROVIDERS = {
     [CLAUDE_CODE]: 'CLAUDE_CODE_OAUTH_TOKEN',
     [OPENCODE_GO]: 'OPENCODE_GO_API_KEY',
     [OPENCODE_ZEN]: 'OPENCODE_API_KEY',
+    anthropic: 'ANTHROPIC_API_KEY',
+    openai: 'OPENAI_API_KEY',
+    gemini: 'GEMINI_API_KEY',
+    mistral: 'MISTRAL_API_KEY',
+    deepseek: 'DEEPSEEK_API_KEY',
+    openrouter: 'OPENROUTER_API_KEY',
 } as const;
+/** The providers paid by use, with an API key: opencode runs them, a client names any of their models. */
+export const KEY_PROVIDERS = ['anthropic', 'openai', 'gemini', 'mistral', 'deepseek', 'openrouter'] as const;
 export type AccountProvider = keyof typeof ACCOUNT_PROVIDERS;
 export const isAccountProvider = (value: string): value is AccountProvider => Object.hasOwn(ACCOUNT_PROVIDERS, value);
 /** A person of a tenant, as the client names them (a Firebase uid, an email hash…). */
@@ -79,7 +90,7 @@ export class ScopeAccounts {
         const tokens = this.claude.tokens();
         const claude = ordered(this.claude.list(), saved.order[CLAUDE_CODE]).map(({ id, label }) => ({ id, ...(label ? { label } : {}), value: tokens[id] }));
         const of = (provider: AccountProvider) => ordered(saved.keys[provider] ?? [], saved.order[provider]).map(({ id, label, key }) => ({ id, ...(label ? { label } : {}), value: key }));
-        return { [CLAUDE_CODE]: claude, [OPENCODE_GO]: of(OPENCODE_GO), [OPENCODE_ZEN]: of(OPENCODE_ZEN) };
+        return Object.fromEntries((Object.keys(ACCOUNT_PROVIDERS) as AccountProvider[]).map((provider) => [provider, provider === CLAUDE_CODE ? claude : of(provider)])) as Record<AccountProvider, Array<{ id: string; label?: string; value: string }>>;
     }
 
     /** A key of a provider (not Claude Code: its token comes from the sign-in). */

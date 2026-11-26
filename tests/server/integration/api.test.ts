@@ -170,6 +170,25 @@ describe('the runner over HTTP', () => {
         expect(models.json.providers.find((p: { id: string }) => p.id === 'claude-code')).toMatchObject({ accounts: 1, yours: 1, tenant: 0, available: 1 });
     });
 
+    it('API keys of providers by use: kept by the runner, run by opencode with the model as opencode names it', async () => {
+        const { call, tenantKey, platformKey, fake } = await start(() => ({ output: 'the answer\n' }));
+        const tenant = { key: platformKey, headers: { 'x-runner-tenant': 'acme' } };
+        const added = await call('POST', '/v1/accounts/anthropic', { ...tenant, body: { key: 'sk-ant-api03-abcdefghijkl', label: 'Workspace' } });
+        expect(added.json.account).toMatchObject({ provider: 'anthropic', scope: 'tenant' });
+        expect(added.text).not.toContain('sk-ant-api03');
+        await call('POST', '/v1/accounts/gemini', { ...tenant, body: { key: 'AIzaSyabcdefghijklmnop' } });
+        const models = (await call('GET', '/v1/models', { key: tenantKey, headers: { 'x-runner-user': 'ana' } })).json.providers;
+        expect(models.find((p: { id: string }) => p.id === 'anthropic')).toMatchObject({ kind: 'usage', models: [], accounts: 1, tenant: 1 });
+        expect(models.find((p: { id: string }) => p.id === 'claude-code')).toMatchObject({ kind: 'subscription', accounts: 0 });
+        const ana = { key: tenantKey, headers: { 'x-runner-user': 'ana' } };
+        expect((await call('POST', '/v1/complete', { ...ana, body: { provider: 'anthropic', model: 'claude-sonnet-5-5', prompt: 'hi' } })).json).toEqual({ text: 'the answer' });
+        const exec = fake.execs.at(-1)!;
+        expect([exec.env.RUNNER_MODEL, exec.env.ANTHROPIC_API_KEY]).toEqual(['anthropic/claude-sonnet-5-5', 'sk-ant-api03-abcdefghijkl']);
+        expect((await call('POST', '/v1/complete', { ...ana, body: { provider: 'gemini', model: 'gemini-3.8-flash', prompt: 'hi' } })).status).toBe(200);
+        expect([fake.execs.at(-1)!.env.RUNNER_MODEL, fake.execs.at(-1)!.env.GEMINI_API_KEY]).toEqual(['google/gemini-3.8-flash', 'AIzaSyabcdefghijklmnop']);
+        expect((await call('POST', '/v1/complete', { ...ana, body: { provider: 'openai', model: 'gpt-5', prompt: 'hi' } })).json).toEqual({ error: 'no-provider' });
+    });
+
     it('a person without their own subscription uses those of the tenant', async () => {
         const { call, tenantKey, platformKey, fake } = await start();
         // The tenant account added by the platform (or the console) for the tenant itself.

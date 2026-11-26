@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { CLAUDE_CODE, accountKey, candidateEnv, connectedAccounts, outOfCredit, type Candidate } from './providers.ts';
+import { CLAUDE_CODE, accountKey, candidateEnv, connectedAccounts, opencodeModel, outOfCredit, type Candidate } from './providers.ts';
 
 // The chats of a client with a harness on the runner: Claude Code or opencode, with the accounts of the person (or
 // of the tenant). One container per chat; each message runs the harness in it, continuing the conversation of the
@@ -401,7 +401,7 @@ export class ServerChats {
         }, 30_000);
         try {
             for (const [index, account] of usable.entries()) {
-                const candidate: Candidate = { provider: model.provider, model: model.model, ...(model.variant ? { variant: model.variant } : {}), name: model.name ?? model.model, account };
+                const candidate: Candidate = { provider: model.provider, model: engine === 'opencode' ? opencodeModel(model.provider, model.model) : model.model, ...(model.variant ? { variant: model.variant } : {}), name: model.name ?? model.model, account };
                 const keys = candidateEnv(candidate, effort, env);
                 let tail = '';
                 // Its end (done, error) held back until it is known whether the account ran out of credit: then the
