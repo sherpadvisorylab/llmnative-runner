@@ -26,6 +26,7 @@ async function api<T>(method: string, path: string, body?: unknown): Promise<T> 
 }
 
 const fleet: RunnerFleet = {
+    localKeys: true,
     list: async () => (await api<{ runners: RunnerEntry[] }>('GET', '/runners')).runners,
     add: async (input) => (await api<{ runner: RunnerEntry }>('POST', '/runners', input)).runner,
     update: async (id, patch) => { await api('PATCH', `/runners/${encodeURIComponent(id)}`, patch); },

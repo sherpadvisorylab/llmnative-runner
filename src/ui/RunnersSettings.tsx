@@ -23,6 +23,8 @@ export interface RunnerFleet {
     status(id: string): Promise<RunnerStatus>;
     /** Installs and connects a runner over SSH (`@llmnative/runner/setup` in the backend); none: only by hand. */
     install?(input: { name: string; domain: string; access: RunnerSshAccess }, onProgress: (progress: { line: string; phase?: InstallPhase }) => void): Promise<RunnerEntry>;
+    /** The backend runs on the computer of the person (`npx @llmnative/runner setup`): it can use its SSH keys. */
+    localKeys?: boolean;
     /** The tenants of the platform and their runner; none: no distribution on this page. */
     tenants?: {
         list(): Promise<Array<{ id: string; name: string; runnerId?: string }>>;
@@ -168,7 +170,7 @@ export function AddRunner({ fleet, t, locale, onClose, onAdded }: { fleet: Runne
                 {mode === 'automatic' && fleet.install && (
                     <>
                         {nameField}
-                        <AutomaticInstall t={t} install={(domain, access, onProgress) => fleet.install!({ name: name.trim() || domain, domain, access }, onProgress)} onDone={onAdded} onError={fail} />
+                        <AutomaticInstall t={t} localKeys={!!fleet.localKeys} install={(domain, access, onProgress) => fleet.install!({ name: name.trim() || domain, domain, access }, onProgress)} onDone={onAdded} onError={fail} />
                     </>
                 )}
                 {mode === 'guided' && (
@@ -212,18 +214,19 @@ function ExistingRunner({ t, nameField, onConnect }: { t: RunnerUiTexts; name: s
 
 const PHASES: InstallPhase[] = ['check', 'docker', 'files', 'start', 'agent', 'health', 'pair', 'tls', 'done'];
 
-function AutomaticInstall({ t, install, onDone, onError }: {
+function AutomaticInstall({ t, localKeys, install, onDone, onError }: {
     t: RunnerUiTexts;
+    localKeys: boolean;
     install: (domain: string, access: RunnerSshAccess, onProgress: (progress: { line: string; phase?: InstallPhase }) => void) => Promise<RunnerEntry>;
     onDone: (entry: RunnerEntry) => void | Promise<void>;
     onError: (failure: unknown) => void;
 }) {
-    const [values, setValues] = useState({ host: '', port: '22', username: 'root', auth: 'key', privateKey: '', password: '', domain: '' });
+    const [values, setValues] = useState({ host: '', port: '22', username: localKeys ? '' : 'root', auth: localKeys ? 'local' : 'key', privateKey: '', password: '', domain: '' });
     const [log, setLog] = useState<string[]>([]);
     const [phase, setPhase] = useState<InstallPhase | null>(null);
     const [running, setRunning] = useState(false);
     const set = (name: keyof typeof values) => ({ value }: { value?: unknown }) => setValues((all) => ({ ...all, [name]: String(value ?? '') }));
-    const ready = values.host.trim() && values.domain.trim() && values.username.trim() && (values.auth === 'key' ? values.privateKey.trim() : values.password);
+    const ready = values.host.trim() && values.domain.trim() && (values.auth === 'local' || values.username.trim()) && (values.auth === 'local' || (values.auth === 'key' ? values.privateKey.trim() : values.password));
     return (
         <div className="flex flex-col gap-3">
             {!running && (
@@ -234,8 +237,9 @@ function AutomaticInstall({ t, install, onDone, onError }: {
                         <TextInput name="port" label={t.addPort} onChange={set('port')} />
                         <TextInput name="username" label={t.addUser} onChange={set('username')} />
                     </div>
-                    <Select name="auth" label={t.addAuth} options={[{ label: t.addKey, value: 'key' }, { label: t.addPassword, value: 'password' }]} onChange={set('auth')} />
-                    {values.auth === 'key'
+                    <Select name="auth" label={t.addAuth} options={[...(localKeys ? [{ label: t.addLocalKey, value: 'local' }] : []), { label: t.addKey, value: 'key' }, { label: t.addPassword, value: 'password' }]} onChange={set('auth')} />
+                    {values.auth === 'local' && <p className="text-xs text-muted-foreground">{t.addLocalKeyHint}</p>}
+                    {values.auth === 'local' ? null : values.auth === 'key'
                         ? <TextArea name="privateKey" label={t.addKey} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" onChange={set('privateKey')} />
                         : <Password name="password" label={t.addPassword} autoComplete="off" onChange={set('password')} />}
                 </Form>
@@ -260,7 +264,7 @@ function AutomaticInstall({ t, install, onDone, onError }: {
                                 host: values.host.trim(),
                                 port: Number(values.port) || 22,
                                 username: values.username.trim(),
-                                ...(values.auth === 'key' ? { privateKey: values.privateKey } : { password: values.password }),
+                                ...(values.auth === 'key' ? { privateKey: values.privateKey } : values.auth === 'password' ? { password: values.password } : {}),
                             }, ({ line, phase: next }) => {
                                 if (next) setPhase(next);
                                 if (!/^[A-Z_]+=/.test(line)) setLog((all) => [...all, line]);

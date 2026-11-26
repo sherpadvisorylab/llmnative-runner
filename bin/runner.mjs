@@ -12,6 +12,7 @@ import { installOverSsh, installCommand, verifiedInstallCommands, isDomain, RUNN
 import { RunnerClient } from '../dist/client.mjs';
 import { spawn } from 'node:child_process';
 import { startSetupServer, fleetFile } from './setup-server.mjs';
+import { localSshFor } from './ssh-keys.mjs';
 
 const [command, ...rest] = process.argv.slice(2);
 const flags = {};
@@ -62,12 +63,15 @@ async function main() {
         if (!isDomain(domain)) fail('--domain runner.example.com is required');
         const keyFile = typeof flags.key === 'string' ? flags.key.replace(/^~/, homedir()) : undefined;
         const password = flags.password ? (typeof flags.password === 'string' ? flags.password : await ask('SSH password: ', true)) : undefined;
-        const privateKey = keyFile ? readFileSync(keyFile, 'utf8') : (!password ? readDefaultKey() : undefined);
+        // Without --key: the key ~/.ssh/config gives this host, as ssh does, then the default ones.
+        const local = localSshFor(String(flags.host));
+        const privateKey = keyFile ? readFileSync(keyFile, 'utf8') : (!password ? local.privateKey : undefined);
         if (!privateKey && !password) fail('no SSH key found: give --key <file> or --password');
+        if (!keyFile && local.file && !password) console.log(`SSH key: ${local.file}`);
         const result = await installOverSsh({
             host: String(flags.host),
             port: flags.port ? Number(flags.port) : 22,
-            username: typeof flags.user === 'string' ? flags.user : 'root',
+            username: typeof flags.user === 'string' ? flags.user : (local.user ?? 'root'),
             ...(privateKey ? { privateKey } : {}),
             ...(password ? { password } : {}),
             ...(typeof flags.fingerprint === 'string' ? { hostFingerprint: flags.fingerprint } : {}),
@@ -90,13 +94,6 @@ async function main() {
     console.log('       npx @llmnative/runner guide --domain <runner.example.com>');
     console.log('       npx @llmnative/runner pair --url <https://runner…> --code <ABCD-EFGH>');
     process.exit(command ? 64 : 0);
-}
-
-function readDefaultKey() {
-    for (const name of ['id_ed25519', 'id_ecdsa', 'id_rsa']) {
-        try { return readFileSync(`${homedir()}/.ssh/${name}`, 'utf8'); } catch { /* next */ }
-    }
-    return undefined;
 }
 
 main().catch((error) => fail(`${error.code ? `${error.code}: ` : ''}${error.message}`));

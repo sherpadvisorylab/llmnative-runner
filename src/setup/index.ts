@@ -117,3 +117,33 @@ export async function installAndPair(target: SshTarget, options: InstallOptions 
     const paired = await new RunnerClient({ url: installed.url, ...(options.fetch ? { fetch: options.fetch } : {}) }).pair(installed.pairingCode, options.name);
     return { url: installed.url, hostFingerprint: installed.hostFingerprint, platformKey: paired.key, version: paired.version };
 }
+
+/** A `Host` pattern of ~/.ssh/config (`*` and `?`) against a host name. */
+const hostMatches = (pattern: string, host: string) => {
+    const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, (char) => `\\${char}`).replace(/\*/g, '.*').replace(/\?/g, '.');
+    return new RegExp(`^${escaped}$`, 'i').test(host);
+};
+
+/**
+ * What ~/.ssh/config says for a host: its user and its key files, in the order ssh tries them (first match of each
+ * option wins, as ssh does). `~` left as is: the caller resolves it.
+ */
+export function sshConfigFor(configText: string, host: string): { user?: string; identityFiles: string[] } {
+    let applies = true;
+    let user: string | undefined;
+    const identityFiles: string[] = [];
+    for (const raw of configText.split(/\r?\n/)) {
+        const line = raw.trim();
+        if (!line || line.startsWith('#')) continue;
+        const [keyword, ...rest] = line.split(/\s+/);
+        const value = rest.join(' ').replace(/^"(.*)"$/, '$1');
+        const name = keyword.toLowerCase();
+        if (name === 'host') {
+            const patterns = rest;
+            applies = patterns.some((pattern) => !pattern.startsWith('!') && hostMatches(pattern, host)) && !patterns.some((pattern) => pattern.startsWith('!') && hostMatches(pattern.slice(1), host));
+        } else if (name === 'match') applies = false;
+        else if (applies && name === 'user' && user === undefined) user = value;
+        else if (applies && name === 'identityfile') identityFiles.push(value);
+    }
+    return { ...(user ? { user } : {}), identityFiles };
+}

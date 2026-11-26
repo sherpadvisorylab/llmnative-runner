@@ -65,10 +65,32 @@ for port in 80 443; do
 done
 
 step docker "Docker"
+# Docker from its own repository with apt, without stopping when an index of the distribution does not download (its
+# mirrors syncing: "File has unexpected size"): apt then uses the indexes it already has.
+docker_from_apt() {
+  command -v apt-get >/dev/null 2>&1 || return 1
+  . /etc/os-release
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc || return 1
+  chmod a+r /etc/apt/keyrings/docker.asc
+  printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/%s %s stable\n' \
+    "$(dpkg --print-architecture)" "$ID" "$VERSION_CODENAME" > /etc/apt/sources.list.d/docker.list
+  apt-get update -qq >/dev/null 2>&1 || say "warning: some indexes of the distribution did not download (its mirrors are syncing): the ones of before are used"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
+}
 if ! command -v docker >/dev/null 2>&1; then
-  say "Installing Docker (get.docker.com)…"
-  command -v curl >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq curl ca-certificates; }
-  curl -fsSL https://get.docker.com | sh >/dev/null || fail docker "Docker could not be installed"
+  say "Installing Docker…"
+  command -v curl >/dev/null 2>&1 || { apt-get update -qq || true; apt-get install -y -qq curl ca-certificates; }
+  if ! curl -fsSL https://get.docker.com | sh >/dev/null 2>&1; then
+    say "get.docker.com did not finish: installing from the repository of Docker"
+    tries=0
+    until docker_from_apt; do
+      tries=$((tries + 1))
+      [ "$tries" -lt 3 ] || fail docker "Docker could not be installed: try again in some minutes"
+      say "Docker not installed yet (attempt $tries of 3): trying again in 30 seconds…"
+      sleep 30
+    done
+  fi
 fi
 docker compose version >/dev/null 2>&1 || fail docker-compose "the compose plugin of Docker is missing (docker compose)"
 systemctl enable --now docker >/dev/null 2>&1 || true

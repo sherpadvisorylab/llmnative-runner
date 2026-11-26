@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 Images and npm package share the version.
 
+## [Unreleased]
+
+From the first automatic installation on a new VPS (161.97.140.94).
+
+### Fixed
+- Docker while the mirrors of Ubuntu are syncing ("File has unexpected size"): when get.docker.com fails, Docker is
+  installed from its own repository with the indexes already there, tried again up to 3 times.
+- Without `--key`, the command line and the setup page use the key (and user) `~/.ssh/config` gives the host, then
+  the default keys; the setup page offers "The SSH key of this computer".
+
 ## [1.0.1] - 2026-11-26
 
 Compared with the runner in production (Playbook 0.53.0 on Coolify, the reference).

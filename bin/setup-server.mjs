@@ -9,6 +9,7 @@ import { dirname, extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installOverSsh } from '../dist/setup.mjs';
 import { RunnerClient } from '../dist/client.mjs';
+import { localSshFor } from './ssh-keys.mjs';
 
 const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'setup-app');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.json': 'application/json' };
@@ -117,12 +118,16 @@ export function startSetupServer({ port = 0, file = fleetFile(), log = () => {} 
                     response.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store' });
                     const write = (event) => response.write(`${JSON.stringify(event)}\n`);
                     try {
-                        log(`installing on ${access.username}@${access.host} as ${input.domain}…`);
+                        // No key nor password given: the key of this computer for that host (~/.ssh/config).
+                        const local = !access.privateKey && !access.password ? localSshFor(String(access.host ?? '')) : {};
+                        if (!access.privateKey && !access.password && !local.privateKey) throw Object.assign(new Error('no SSH key of this computer for this host'), { code: 'ssh-key' });
+                        const username = String(access.username || local.user || 'root');
+                        log(`installing on ${username}@${access.host} as ${input.domain}${local.file ? ` (key ${local.file})` : ''}…`);
                         const installed = await installOverSsh({
                             host: String(access.host ?? ''),
                             port: Number(access.port) || 22,
-                            username: String(access.username ?? 'root'),
-                            ...(access.privateKey ? { privateKey: String(access.privateKey) } : {}),
+                            username,
+                            ...(access.privateKey ? { privateKey: String(access.privateKey) } : local.privateKey ? { privateKey: local.privateKey } : {}),
                             ...(access.password ? { password: String(access.password) } : {}),
                         }, {
                             domain: String(input.domain ?? ''),
