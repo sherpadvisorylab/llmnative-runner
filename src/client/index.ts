@@ -9,7 +9,7 @@
 export const RUNNER_KEY_PROVIDERS = ['anthropic', 'openai', 'gemini', 'mistral', 'deepseek', 'openrouter'] as const;
 export type RunnerKeyProvider = (typeof RUNNER_KEY_PROVIDERS)[number];
 export type RunnerProvider = 'claude-code' | 'opencode-go' | 'opencode' | RunnerKeyProvider;
-export type RunnerPermission = 'complete' | 'chat' | 'chat:tools' | 'accounts' | 'accounts:tenant' | 'act-as-user' | 'keys';
+export type RunnerPermission = 'complete' | 'chat' | 'chat:tools' | 'accounts' | 'accounts:tenant' | 'act-as-user' | 'keys' | 'modules';
 
 export type RunnerAccount = {
     provider: RunnerProvider;
@@ -164,7 +164,7 @@ export class RunnerClient {
         return this.request('POST', '/v1/pair/requests/poll', { request });
     }
 
-    info(): Promise<{ version: string; harnesses: string[]; capabilities: Record<string, boolean>; permissions: RunnerPermission[]; tenant?: string }> {
+    info(): Promise<{ version: string; harnesses: string[]; capabilities: Record<string, boolean>; modules?: string[]; permissions: RunnerPermission[]; tenant?: string }> {
         return this.request('GET', '/v1/info');
     }
 
