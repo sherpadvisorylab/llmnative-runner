@@ -18,5 +18,5 @@ per l'API. Stato e lavoro aperto: `.notes/STATUS.md`. Il design di partenza è i
 - I passi dell'installazione si descrivono una volta in `src/setup/steps.ts`; `install/install.sh` incorpora
   `install/compose.yaml` (un test controlla che siano uguali) e la versione del pacchetto.
 - Test: `tests/server/{unit,integration}` (ambiente node), `tests/unit/{client,setup,ui}`.
-- Versione unica per immagini e pacchetto (SemVer); release dal tag `v<versione>` (`.github/workflows/release.yml`),
+- Versione unica per immagini e pacchetto (SemVer); release dal tag `v<versione>` (`.github/workflows/publish.yml`),
   con voce in `CHANGELOG.md`. Nessuna pubblicazione a mano.

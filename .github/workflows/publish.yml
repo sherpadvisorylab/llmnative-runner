@@ -1,4 +1,4 @@
-# A release, from a tag v<version> (the version of package.json): the gates, then the images on GHCR (runner and
+# Publish: a release, from a tag v<version> (the version of package.json): the gates, then the images on GHCR (runner and
 # agent, amd64 and arm64), the GitHub release with install.sh and its checksum, and the package on npm through
 # trusted publishing (npm trusts this workflow: package Settings → Trusted Publisher; no token stored anywhere).
 name: Release

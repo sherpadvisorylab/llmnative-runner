@@ -14,6 +14,10 @@ From the first automatic installation on a new VPS (161.97.140.94).
 - Without `--key`, the command line and the setup page use the key (and user) `~/.ssh/config` gives the host, then
   the default keys; the setup page offers "The SSH key of this computer".
 
+### Changed
+- The workflow that publishes is `publish.yml` (was `release.yml`), the same name as the other packages: one
+  Trusted Publisher configuration for all of them.
+
 ## [1.0.1] - 2026-11-26
 
 Compared with the runner in production (Playbook 0.53.0 on Coolify, the reference).

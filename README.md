@@ -85,7 +85,7 @@ npm run build:console
 cd server && DATA_DIR=/tmp/runner CONSOLE_DIR=../dist/console node src/main.ts   # the server, without Docker for chats
 ```
 
-The server is plain Node 24 (TypeScript run as is, no dependencies). Releases: a tag `v<version>` builds the images (amd64, arm64), the GitHub release with `install.sh` and publishes the package (`.github/workflows/release.yml`). Images and package share the version.
+The server is plain Node 24 (TypeScript run as is, no dependencies). Releases: a tag `v<version>` builds the images (amd64, arm64), the GitHub release with `install.sh` and publishes the package (`.github/workflows/publish.yml`). Images and package share the version.
 
 ## Terms of the subscriptions
 
