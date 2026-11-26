@@ -7,6 +7,7 @@ import { ClaudeAccounts } from './claudeAccounts.ts';
 import { ServerCompletions } from './completions.ts';
 import type { RunnerConfig } from './config.ts';
 import { Credit } from './credit.ts';
+import type { RunnerModule } from './modules.ts';
 import { Registry } from './registry.ts';
 
 // Everything the runner holds while it runs: its tenants and keys (registry), the accounts of every scope, and for
@@ -45,6 +46,8 @@ export class Runtime {
     readonly deps: RuntimeDeps;
     private readonly tenants = new Map<string, TenantRuntime>();
     private readonly adminToken: string;
+    /** The modules started (modules.ts): told when a tenant goes. */
+    modules: RunnerModule[] = [];
 
     constructor(deps: RuntimeDeps) {
         this.deps = deps;
@@ -101,6 +104,7 @@ export class Runtime {
 
     /** Takes a tenant off: its chats closed, its keys gone, its accounts kept on disk until removed by hand. */
     async removeTenant(id: string): Promise<boolean> {
+        for (const module of this.modules) await Promise.resolve(module.removeTenant?.(id)).catch((error: Error) => this.deps.log('module removeTenant failed', { module: module.name, error: error.message }));
         await this.tenants.get(id)?.chats.closeAll();
         this.tenants.delete(id);
         this.accounts.forget(id);

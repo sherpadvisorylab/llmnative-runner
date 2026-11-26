@@ -12,6 +12,8 @@ export interface RunnerConfig {
     publicUrl?: string;
     /** Chats open at once per tenant, and on the whole runner. */
     maxChatsPerTenant: number;
+    /** The modules of the image to load (RUNNER_MODULES: files or packages, modules.ts). */
+    modules: string[];
     maxChats: number;
     /** Answers at once per tenant. */
     maxCompletionsPerTenant: number;
@@ -43,6 +45,7 @@ export function readConfig(env: Vars = process.env): RunnerConfig {
         version,
         ...(env.PUBLIC_URL ? { publicUrl: env.PUBLIC_URL.replace(/\/+$/, '') } : {}),
         maxChatsPerTenant: positive(env, 'MAX_CHATS_PER_TENANT', 6),
+        modules: (env.RUNNER_MODULES ?? '').split(/[\s,]+/).filter(Boolean),
         maxChats: positive(env, 'MAX_CHATS', 6),
         maxCompletionsPerTenant: positive(env, 'MAX_COMPLETIONS_PER_TENANT', 2),
         ...(env.AGENT_MEMORY ? { agentMemory: env.AGENT_MEMORY } : {}),

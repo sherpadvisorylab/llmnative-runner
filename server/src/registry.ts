@@ -19,7 +19,7 @@ export const TENANT_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
 export const PROJECT_ID = /^[a-z0-9]{1,32}$/;
 /** Whether a tenant is of a project: `<project>` itself or `<project>-…`. */
 export const inProject = (project: string, tenant: string) => tenant === project || tenant.startsWith(`${project}-`);
-export const PERMISSIONS = ['complete', 'chat', 'chat:tools', 'accounts', 'accounts:tenant', 'act-as-user', 'keys'] as const;
+export const PERMISSIONS = ['complete', 'chat', 'chat:tools', 'accounts', 'accounts:tenant', 'act-as-user', 'keys', 'modules'] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 export const PAIRING_TTL_MS = 15 * 60_000;
 /** Wrong codes in a row after which pairing waits: a code of 8 characters is not guessed in these. */

@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 Images and npm package share the version.
 
+## [Unreleased]
+
+### Added
+- Modules (`server/src/modules.ts`): what a product builds on the runner without forking it. An image
+  `FROM llmnative-runner` adds its modules and names them in `RUNNER_MODULES` (files or packages exporting a
+  `RunnerModule`). Each one is started with the runner as it is — its tenants, their keys and accounts (`keysFor`),
+  their credit, the containers of the harnesses, a folder of its own (`DATA_DIR/modules/<name>`) — and serves
+  `/v1/modules/<name>/…` for one tenant (a project key with the new permission `modules`, or a platform key of its
+  project with `X-Runner-Tenant`) and `/hooks/<name>/…` in public (a webhook: the module checks its signature). It hears
+  when a tenant is removed. A module that fails to load or start is left out and said in the log. `/v1/info` lists the
+  modules.
+
 ## [1.2.0] - 2026-11-26
 
 ### Added

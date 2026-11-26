@@ -3,6 +3,7 @@ import { hostname } from 'node:os';
 import { createRunnerServer } from './api.ts';
 import { CHAT_LABEL, dockerChatHost } from './chats.ts';
 import { ConfigError, readConfig, type RunnerConfig } from './config.ts';
+import { loadModules, startModules } from './modules.ts';
 import { Runtime } from './runtime.ts';
 
 // The runner: API v1 and console on PORT, its data under DATA_DIR, one container of AGENT_IMAGE per chat and per
@@ -64,6 +65,15 @@ async function main() {
         // The containers reach this one by its name on the same network; outside Docker, chats run without tools.
         ...(network ? { toolsBase: `http://${hostname()}:${config.port}` } : {}),
     });
+    // The modules of the image (an image FROM llmnative-runner that adds them): each with the runner as it is.
+    runtime.modules = await startModules(await loadModules(config.modules, log), () => ({
+        config,
+        log,
+        host: runtime.deps.host,
+        tenants: () => runtime.registry.tenants().map((tenant) => tenant.id),
+        keysFor: (scope) => runtime.accounts.keysFor(scope),
+        credit: (tenant) => (runtime.registry.tenant(tenant) ? runtime.tenant(tenant)?.credit : undefined),
+    }), config.dataDir, log);
     const server = createRunnerServer(runtime, { corsOrigins: (process.env.CORS_ORIGINS ?? '').split(/[\s,]+/).filter(Boolean) });
     server.listen(config.port, () => {
         log('runner listening', { version: config.version, port: config.port, agentImage: config.agentImage, network: network ?? 'none', tenants: runtime.registry.tenants().length });
@@ -73,6 +83,7 @@ async function main() {
     const stop = async () => {
         log('stopping');
         server.close();
+        for (const module of runtime.modules) await Promise.resolve(module.stop?.()).catch(() => undefined);
         await runtime.stop().catch(() => undefined);
         process.exit(0);
     };

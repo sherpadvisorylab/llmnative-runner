@@ -10,6 +10,8 @@ info:
     `X-Runner-User` (with the permission `act-as-user` for a project key). Errors are `{ "error": "<code>" }`.
     A platform key paired with a `project` owns only the tenants `<project>` and `<project>-<tenant>`: any other is
     answered as missing (403 `outside project` when it tries to make one).
+    Modules of the image (RUNNER_MODULES) serve `/v1/modules/<name>/…` for one tenant (a project key with the
+    permission `modules`, or a platform key with `X-Runner-Tenant`) and `/hooks/<name>/…` in public.
 servers:
   - url: https://runner.example.com
 components:
@@ -46,7 +48,7 @@ components:
         tenant: { type: string }
         project: { type: string, description: 'Platform keys: the project whose tenants it owns (<project>, <project>-…); none, every tenant' }
         name: { type: string }
-        permissions: { type: array, items: { type: string, enum: [complete, chat, 'chat:tools', accounts, 'accounts:tenant', act-as-user, keys] } }
+        permissions: { type: array, items: { type: string, enum: [complete, chat, 'chat:tools', accounts, 'accounts:tenant', act-as-user, keys, modules] } }
         createdAt: { type: string, format: date-time }
         expiresAt: { type: [string, 'null'], format: date-time }
     ChatEvent:

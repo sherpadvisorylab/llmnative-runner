@@ -7,6 +7,7 @@ import { CompletionError, completionRequestOf, offerOf } from './completions.ts'
 import { readMachine } from './machine.ts';
 import { CLAUDE_CODE, accountKey } from './providers.ts';
 import { PERMISSIONS, RegistryError, inProject, type KeyRecord, type Permission } from './registry.ts';
+import { sendWebResponse, toWebRequest } from './modules.ts';
 import type { Runtime } from './runtime.ts';
 
 // The HTTP side of the runner: API v1 (JSON, `Authorization: Bearer <key>`) and the console.
@@ -29,6 +30,8 @@ import type { Runtime } from './runtime.ts';
 //   /v1/chats…                                           (tenant, chat) chats with a harness, NDJSON replies
 //   POST /v1/internal/<tenant>/chats/<id>/tool           (token of the chat) a call of a tool, from its container
 //   GET  /console/…                                      the console (admin token)
+//   ANY  /v1/modules/<name>/…                            a module of the image, for one tenant (modules.ts)
+//   ANY  /hooks/<name>/…                                 a public route of a module (a webhook)
 // The tenant of a project key is its own; a platform key (or the admin token) names one with `X-Runner-Tenant`.
 // A platform key of a project sees, makes and names only the tenants of its project (`<project>`, `<project>-…`):
 // any other is answered as missing.
@@ -366,6 +369,15 @@ export function createRunnerServer(runtime: Runtime, options: ServerOptions = {}
                 return response.end();
             }
             if (request.method === 'GET' && path.startsWith('/console/')) return consoleFile(response, path);
+            // A public route of a module (a webhook of GitHub): the module checks its own signature.
+            if (path.startsWith('/hooks/')) {
+                const [, , name, ...tail] = path.split('/');
+                const module = runtime.modules.find((item) => item.name === name && item.hook);
+                if (!module) throw new HttpError(404, 'not found');
+                const answer = await module.hook!(await toWebRequest(request, url), `/${tail.join('/')}`);
+                if (!answer) throw new HttpError(404, 'not found');
+                return await sendWebResponse(response, answer);
+            }
             if (!path.startsWith('/v1/')) throw new HttpError(404, 'not found');
             const parts = path.slice('/v1/'.length).split('/').filter(Boolean).map(decodeURIComponent);
             const [area, ...rest] = parts;
@@ -427,11 +439,23 @@ export function createRunnerServer(runtime: Runtime, options: ServerOptions = {}
                 throw new HttpError(404, 'not found');
             }
             if (area === 'platform') return await platform(request, response, caller, rest);
+            // A module of the image, always for one tenant: the one of a project key (with `modules`), or the one a
+            // platform key of its project names.
+            if (area === 'modules') {
+                const module = runtime.modules.find((item) => item.name === rest[0] && item.handle);
+                if (!module) throw new HttpError(404, 'not found');
+                need(caller, 'modules');
+                const scope = scopeOf(request, caller);
+                const answer = await module.handle!(await toWebRequest(request, url), { ...scope, caller: caller.kind }, `/${rest.slice(1).map(encodeURIComponent).join('/')}`);
+                if (!answer) throw new HttpError(404, 'not found');
+                return await sendWebResponse(response, answer);
+            }
             if (area === 'info' && !rest.length && request.method === 'GET') {
                 return send(response, 200, {
                     version: runtime.config.version,
                     harnesses: ['claude-code', 'opencode'],
                     capabilities: { complete: true, chats: true, tools: !!runtime.deps.toolsBase, files: true },
+                    modules: runtime.modules.map((module) => module.name),
                     permissions: caller.kind === 'project' ? caller.key.permissions : [...PERMISSIONS],
                     ...(caller.kind === 'project' ? { tenant: caller.key.tenant } : {}),
                 });
