@@ -11,7 +11,7 @@
 # For a machine reading it, some lines are `NAME=value`: STEP=<phase>, RUNNER_URL=, PAIRING_CODE=, RUNNER_ERROR=.
 set -eu
 
-VERSION="1.3.0"
+VERSION="1.3.1"
 DIR="/opt/llmnative-runner"
 DOMAIN=""
 MAX_CHATS=""
