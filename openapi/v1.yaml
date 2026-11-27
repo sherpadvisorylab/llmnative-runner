@@ -177,6 +177,11 @@ paths:
       summary: Disconnects an account (its secret deleted)
       parameters: [{ name: provider, in: path, required: true, schema: { type: string } }, { name: id, in: path, required: true, schema: { type: string } }]
       responses: { '200': { description: '{ removed: true }' } }
+    patch:
+      summary: The name of an account (its email, say); an empty label removes it
+      parameters: [{ name: provider, in: path, required: true, schema: { type: string } }, { name: id, in: path, required: true, schema: { type: string } }]
+      requestBody: { content: { application/json: { schema: { type: object, required: [label], properties: { label: { type: string, maxLength: 60 } } } } } }
+      responses: { '200': { description: '{ accounts }' }, '404': { description: 'no such account' } }
   /v1/accounts/order:
     put:
       summary: The order of the accounts of a provider

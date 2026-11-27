@@ -115,6 +115,19 @@ export class ScopeAccounts {
         return true;
     }
 
+    /** The name of an account (its email, say); empty: none. False when there is no such account. */
+    rename(provider: AccountProvider, id: string, label: string): boolean {
+        if (provider === CLAUDE_CODE) return this.claude.rename(id, label);
+        const saved = this.read();
+        const found = (saved.keys[provider] ?? []).find((item) => item.id === id);
+        if (!found) return false;
+        const name = label.trim().slice(0, 60);
+        delete found.label;
+        if (name) found.label = name;
+        writeJson(this.file, saved);
+        return true;
+    }
+
     /** The order of the accounts of a provider: the ids given first, the others after as they were. */
     setOrder(provider: AccountProvider, ids: string[]): boolean {
         const known = new Set(this.list().filter((item) => item.provider === provider).map((item) => item.id));

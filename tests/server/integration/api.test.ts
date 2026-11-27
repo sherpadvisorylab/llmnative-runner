@@ -161,6 +161,11 @@ describe('the runner over HTTP', () => {
         expect(added.json.account).toMatchObject({ provider: 'claude-code', label: 'Max', scope: 'user' });
         expect(added.text).not.toContain('sk-ant');
         expect((await call('GET', '/v1/accounts', bob)).json.accounts).toEqual([]);
+        // Its name, changed by the person (the email of the account); not by another.
+        const renamed = await call('PATCH', `/v1/accounts/claude-code/${added.json.account.id}`, { ...ana, body: { label: 'ana@example.com' } });
+        expect(renamed.json.accounts[0]).toMatchObject({ id: added.json.account.id, label: 'ana@example.com' });
+        expect((await call('PATCH', `/v1/accounts/claude-code/${added.json.account.id}`, { ...bob, body: { label: 'mine' } })).status).toBe(404);
+        expect((await call('PATCH', `/v1/accounts/claude-code/${added.json.account.id}`, { ...ana, body: {} })).status).toBe(400);
         // Bob has no subscription and the tenant none: nothing to run with.
         expect((await call('POST', '/v1/complete', { ...bob, body: { provider: 'claude-code', model: 'sonnet', prompt: 'hi' } })).json).toEqual({ error: 'no-provider' });
         const answer = await call('POST', '/v1/complete', { ...ana, body: { provider: 'claude-code', model: 'sonnet', prompt: 'hi' } });

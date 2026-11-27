@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 Images and npm package share the version.
 
+## [1.4.0] - 2026-11-27
+
+### Added
+- The name of an account: `PATCH /v1/accounts/<provider>/<id>` `{ label }` (the email of the account, say; empty
+  takes it away), `client.accounts.rename`.
+- `RunnerAccounts`: one section per subscription (Claude Code, OpenCode Go), each with several accounts in the order
+  they are used (dragged, or moved with the arrows of the handle), their state (available, or the limit and when it
+  comes back), their name, renamed in place; a second Claude account with the warning on personal subscriptions; a
+  token of `claude setup-token` next to the sign-in, the link copied too; for a tenant, the API keys of the providers
+  by use in their own section. `renderProvider` shows what the host gives under a subscription (e.g. the model its
+  chats start with), `onStack` tells the host a modal of its own is open over it.
+- `AddRunner` `position` (`'right'`): the modal on the right, over another.
+
 ## [1.3.1] - 2026-11-26
 
 ### Fixed

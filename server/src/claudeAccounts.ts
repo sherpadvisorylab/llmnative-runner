@@ -123,6 +123,18 @@ export class ClaudeAccounts {
         return true;
     }
 
+    /** The name of a subscription (its email, say); empty: none. False when there is no such subscription. */
+    rename(id: string, label: string): boolean {
+        const saved = this.read();
+        const found = saved[id];
+        if (!found) return false;
+        const name = label.trim().slice(0, 60);
+        const { label: _old, ...rest } = found;
+        saved[id] = { ...rest, ...(name ? { label: name } : {}) };
+        this.write(saved);
+        return true;
+    }
+
     remove(id: string): boolean {
         const saved = this.read();
         if (!saved[id]) return false;

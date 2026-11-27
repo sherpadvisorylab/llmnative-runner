@@ -266,6 +266,13 @@ export function createRunnerServer(runtime: Runtime, options: ServerOptions = {}
             log('account added', { ...who, provider });
             return send(response, 201, { account: added });
         }
+        if (id && !more && request.method === 'PATCH') {
+            const body = await json(request);
+            if (typeof body.label !== 'string') throw new HttpError(400, 'invalid');
+            const renamed = mine.rename(provider as AccountProvider, id, body.label);
+            if (renamed) log('account renamed', { ...who, provider });
+            return send(response, renamed ? 200 : 404, renamed ? { accounts: view() } : { error: 'not found' });
+        }
         if (id && !more && request.method === 'DELETE') {
             const removed = mine.remove(provider as AccountProvider, id);
             if (removed) log('account removed', { ...who, provider });
@@ -352,7 +359,7 @@ export function createRunnerServer(runtime: Runtime, options: ServerOptions = {}
                 response.setHeader('access-control-allow-origin', origin);
                 response.setHeader('vary', 'origin');
                 response.setHeader('access-control-allow-headers', 'authorization, content-type, x-runner-tenant, x-runner-user');
-                response.setHeader('access-control-allow-methods', 'GET, POST, PUT, DELETE');
+                response.setHeader('access-control-allow-methods', 'GET, POST, PUT, PATCH, DELETE');
                 if (request.method === 'OPTIONS') {
                     response.writeHead(204);
                     return response.end();

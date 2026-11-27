@@ -53,6 +53,13 @@ describe('accounts by scope', () => {
         expect(keysOf([mine]).env.OPENCODE_GO_API_KEY).toBe('second-key-456');
         expect(mine.remove('opencode-go', second.id)).toBe(true);
         expect(mine.list().map((a) => a.id)).toEqual([first.id]);
+        // A name (the email of the account), changed and taken away; the key stays.
+        expect(mine.rename('opencode-go', first.id, ' ana@example.com ')).toBe(true);
+        expect(mine.list()[0].label).toBe('ana@example.com');
+        expect(mine.rename('opencode-go', first.id, '')).toBe(true);
+        expect(mine.list()[0]).not.toHaveProperty('label');
+        expect(mine.rename('opencode-go', 'nope', 'x')).toBe(false);
+        expect(keysOf([mine]).env.OPENCODE_GO_API_KEY).toBe('first-key-123');
     });
 
     it('a Claude sign-in asked twice at once gives the same page, with one CLI (the page of a person in strict mode)', async () => {

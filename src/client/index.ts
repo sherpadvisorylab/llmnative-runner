@@ -217,6 +217,9 @@ export class RunnerClient {
             (await this.request<{ account: RunnerAccount }>('POST', `/v1/accounts/${provider}`, { key, ...(label ? { label } : {}) })).account,
         remove: async (provider: RunnerProvider, id: string): Promise<boolean> =>
             (await this.request<{ removed: boolean }>('DELETE', `/v1/accounts/${provider}/${encodeURIComponent(id)}`)).removed,
+        /** The name of an account (its email, say); empty: none. */
+        rename: async (provider: RunnerProvider, id: string, label: string): Promise<RunnerAccount[]> =>
+            (await this.request<{ accounts: RunnerAccount[] }>('PATCH', `/v1/accounts/${provider}/${encodeURIComponent(id)}`, { label })).accounts,
         order: async (provider: RunnerProvider, ids: string[]): Promise<RunnerAccount[]> =>
             (await this.request<{ accounts: RunnerAccount[] }>('PUT', '/v1/accounts/order', { provider, ids })).accounts,
     };

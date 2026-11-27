@@ -24,43 +24,95 @@ function fakeClient(accounts: RunnerAccount[]) {
         list = [...list, account];
         return account;
     });
+    vi.spyOn(client.accounts, 'rename').mockImplementation(async (provider, id, label) => {
+        list = list.map((account) => (account.provider === provider && account.id === id ? { ...account, label } : account));
+        return list;
+    });
+    vi.spyOn(client.accounts, 'order').mockImplementation(async (provider, ids) => {
+        const mine = ids.map((id) => list.find((account) => account.provider === provider && account.id === id)!);
+        list = [...list.filter((account) => account.provider !== provider), ...mine];
+        return list;
+    });
     return client;
 }
 
+const CLAUDE = (id: string, label?: string, extra: Partial<RunnerAccount> = {}): RunnerAccount => ({ provider: 'claude-code', id, at: '2026-11-20T10:00:00Z', scope: 'tenant', ...(label ? { label } : {}), ...extra });
+
 describe('My subscriptions', () => {
-    it('lists the accounts of the person with their limit, and adds an OpenCode Go key', async () => {
-        const client = fakeClient([{ provider: 'claude-code', id: 'a1', label: 'Max of Ana', at: '2026-11-20T10:00:00Z', scope: 'user', noCreditUntil: '2026-11-25T15:00:00Z' }]);
+    it('one section per subscription: the accounts in their order, with their state, and an OpenCode Go key added', async () => {
+        const client = fakeClient([CLAUDE('a1', 'ana@example.com', { noCreditUntil: '2026-11-25T15:00:00Z' }), CLAUDE('a2')]);
         const onChange = vi.fn();
         render(<RunnerAccounts client={client} scope="user" onChange={onChange} />, { wrapper: wrap });
-        expect(await screen.findByText('Max of Ana')).toBeTruthy();
+        expect(await screen.findByText('Claude Code (2)')).toBeTruthy();
+        expect(screen.getByText('OpenCode Go (0)')).toBeTruthy();
+        expect(screen.getByText('ana@example.com')).toBeTruthy();
+        expect(screen.getByText('Account 2')).toBeTruthy();
         expect(screen.getByText(/Limit reached/)).toBeTruthy();
-        fireEvent.click(screen.getByText('Add OpenCode Go'));
-        const input = document.querySelector('input[name="key"]') as HTMLInputElement;
-        fireEvent.change(input, { target: { value: 'go-key-123456' } });
+        expect(screen.getByText('Available')).toBeTruthy();
+        expect(screen.getByText(/They are used in this order/)).toBeTruthy();
+        // OpenCode Go: its own button, a key and a name.
+        const addButtons = screen.getAllByText('Add subscription');
+        await act(async () => { fireEvent.click(addButtons[1]); });
+        fireEvent.change(document.querySelector('input[name="key"]') as HTMLInputElement, { target: { value: 'go-key-123456' } });
+        fireEvent.change(document.querySelector('input[name="label"]') as HTMLInputElement, { target: { value: 'team@example.com' } });
         await act(async () => { fireEvent.click(screen.getByText('Add')); });
-        await waitFor(() => expect(client.accounts.addKey).toHaveBeenCalledWith('opencode-go', 'go-key-123456', undefined));
+        await waitFor(() => expect(client.accounts.addKey).toHaveBeenCalledWith('opencode-go', 'go-key-123456', 'team@example.com'));
         await waitFor(() => expect(onChange).toHaveBeenCalled());
+        expect(await screen.findByText('OpenCode Go (1)')).toBeTruthy();
+    });
+
+    it('renames an account with the email of the account', async () => {
+        const client = fakeClient([CLAUDE('a1')]);
+        render(<RunnerAccounts client={client} scope="tenant" />, { wrapper: wrap });
+        const rename = await screen.findByLabelText('Rename Account 1');
+        await act(async () => { fireEvent.click(rename); });
+        const input = await waitFor(() => {
+            const found = document.querySelector('input[name="label"]');
+            if (!found) throw new Error('no name field');
+            return found as HTMLInputElement;
+        });
+        fireEvent.change(input, { target: { value: 'ana@example.com' } });
+        await act(async () => { fireEvent.click(screen.getByText('Save')); });
+        await waitFor(() => expect(client.accounts.rename).toHaveBeenCalledWith('claude-code', 'a1', 'ana@example.com'));
+        expect(await screen.findByText('ana@example.com')).toBeTruthy();
+    });
+
+    it('a second Claude account is added with the warning on personal subscriptions', async () => {
+        const client = fakeClient([CLAUDE('a1', 'ana@example.com')]);
+        vi.spyOn(client.accounts, 'startClaudeLogin').mockResolvedValue({ url: 'https://claude.ai/oauth' });
+        render(<RunnerAccounts client={client} scope="tenant" providers={['claude-code']} />, { wrapper: wrap });
+        const add = await screen.findByText('Add subscription');
+        await act(async () => { fireEvent.click(add); });
+        expect(await screen.findByText(/Pro and Max are personal subscriptions/)).toBeTruthy();
+        expect(screen.queryByText(/OpenCode Go/)).toBeNull();
+    });
+
+    it('shows what the host gives under a subscription', async () => {
+        render(<RunnerAccounts client={fakeClient([CLAUDE('a1')])} scope="tenant" providers={['claude-code', 'opencode-go']} renderProvider={(provider, accounts) => <p>defaults of {provider}: {accounts.length}</p>} />, { wrapper: wrap });
+        expect(await screen.findByText('defaults of claude-code: 1')).toBeTruthy();
+        expect(screen.getByText('defaults of opencode-go: 0')).toBeTruthy();
     });
 
     it('a tenant adds the API key of a provider by use, chosen in the list', async () => {
         const client = fakeClient([]);
         render(<RunnerAccounts client={client} scope="tenant" />, { wrapper: wrap });
-        await screen.findByText('No subscription connected.');
+        await screen.findByText(/API keys of the providers by use/);
         await act(async () => { fireEvent.click(screen.getByText('Add a key')); });
         const input = await waitFor(() => {
             const found = document.querySelector('input[name="key"]');
             if (!found) throw new Error(`no key field: ${document.body.textContent}`);
             return found as HTMLInputElement;
         });
-        fireEvent.change(input, { target: { value: 'go-key-123456' } });
+        fireEvent.change(input, { target: { value: 'zen-key-123456' } });
         await act(async () => { fireEvent.click(screen.getByText('Add')); });
-        await waitFor(() => expect(client.accounts.addKey).toHaveBeenCalledWith('opencode-go', 'go-key-123456', undefined));
+        await waitFor(() => expect(client.accounts.addKey).toHaveBeenCalledWith('opencode', 'zen-key-123456', undefined));
     });
 
     it('speaks Italian when asked', async () => {
         render(<RunnerAccounts client={fakeClient([])} scope="user" locale="it-IT" />, { wrapper: wrap });
         expect(await screen.findByText('I miei abbonamenti')).toBeTruthy();
-        expect(screen.getByText('Nessun abbonamento collegato.')).toBeTruthy();
+        expect(screen.getAllByText('Nessun abbonamento collegato.').length).toBe(2);
+        expect(screen.getAllByText('Aggiungi abbonamento').length).toBe(2);
     });
 });
 

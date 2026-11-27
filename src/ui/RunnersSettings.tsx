@@ -167,7 +167,7 @@ const hostOf = (url: string) => {
 };
 
 /** Adding a runner: the three ways, in one modal. */
-export function AddRunner({ fleet, t, locale, onClose, onAdded }: { fleet: RunnerFleet; t: RunnerUiTexts; locale?: string; onClose: () => void; onAdded: (entry: RunnerEntry) => void | Promise<void> }) {
+export function AddRunner({ fleet, t, locale, onClose, onAdded, position }: { fleet: RunnerFleet; t: RunnerUiTexts; locale?: string; onClose: () => void; onAdded: (entry: RunnerEntry) => void | Promise<void>; /** Where the modal opens: centered (default) or on the right, over another. */ position?: 'center' | 'right' }) {
     const [mode, setMode] = useState<Mode>('choose');
     const [error, setError] = useState<string | null>(null);
     const [footer, setFooter] = useState<HTMLDivElement | null>(null);
@@ -175,6 +175,7 @@ export function AddRunner({ fleet, t, locale, onClose, onAdded }: { fleet: Runne
     return (
         <Modal
             title={t.addTitle}
+            {...(position === 'right' ? { position: 'right' as const } : {})}
             size="lg"
             onClose={onClose}
             footer={mode === 'choose' || mode === 'guided' ? false : <div ref={setFooter} className="flex w-full flex-wrap items-center justify-end gap-3" />}
