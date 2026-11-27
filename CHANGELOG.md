@@ -16,6 +16,7 @@ Images and npm package share the version.
   by use in their own section. `renderProvider` shows what the host gives under a subscription (e.g. the model its
   chats start with), `onStack` tells the host a modal of its own is open over it.
 - `AddRunner` `position` (`'right'`): the modal on the right, over another.
+- `forwardToRunner` forwards `PATCH` too (the name of an account, through the backend of a host).
 
 ## [1.3.1] - 2026-11-26
 

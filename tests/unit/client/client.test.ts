@@ -47,6 +47,10 @@ describe('forwardToRunner', () => {
         const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit & { headers: Record<string, string> }];
         expect(url).toBe('https://runner.test/v1/complete?x=1');
         expect(init.headers).toEqual({ authorization: 'Bearer rk_tenant', 'x-runner-user': 'ana', 'content-type': 'application/json' });
+        // The name of an account, too.
+        const renamed = await forwardToRunner(new Request('https://cms.test/api/runner/v1/accounts/claude-code/a1', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ label: 'ana@example.com' }) }), '/v1/accounts/claude-code/a1', { url: 'https://runner.test', key: 'rk_tenant', user: 'ana' }, fetch);
+        expect(renamed.status).toBe(200);
+        expect((fetch.mock.calls[1] as unknown as [string, RequestInit])[1].method).toBe('PATCH');
     });
 
     it('never forwards the routes of a platform or the console', async () => {

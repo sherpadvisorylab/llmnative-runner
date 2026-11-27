@@ -302,7 +302,7 @@ export type RunnerProxyTarget = {
  */
 export async function forwardToRunner(request: Request, path: string, target: RunnerProxyTarget, fetchImpl: typeof fetch = fetch): Promise<Response> {
     if (!PERSON_ROUTES.test(path)) return new Response(JSON.stringify({ error: 'not found' }), { status: 404, headers: { 'content-type': 'application/json' } });
-    if (!['GET', 'POST', 'PUT', 'DELETE'].includes(request.method)) return new Response(JSON.stringify({ error: 'not found' }), { status: 404, headers: { 'content-type': 'application/json' } });
+    if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) return new Response(JSON.stringify({ error: 'not found' }), { status: 404, headers: { 'content-type': 'application/json' } });
     const headers: Record<string, string> = {
         authorization: `Bearer ${target.key}`,
         'x-runner-user': target.user,
