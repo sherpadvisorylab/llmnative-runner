@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DataProvider, I18nProvider, MockDataProvider } from '@llmnative/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -39,33 +39,44 @@ function fakeClient(accounts: RunnerAccount[]) {
 const CLAUDE = (id: string, label?: string, extra: Partial<RunnerAccount> = {}): RunnerAccount => ({ provider: 'claude-code', id, at: '2026-11-20T10:00:00Z', scope: 'tenant', ...(label ? { label } : {}), ...extra });
 
 describe('My subscriptions', () => {
-    it('one section per subscription: the accounts in their order, with their state, and an OpenCode Go key added', async () => {
+    /** Opens the box of a provider: its modal with its accounts. */
+    const openBox = async (name: string) => {
+        const box = await screen.findByText(name);
+        await act(async () => { fireEvent.click(box); });
+        return screen.findByRole('dialog');
+    };
+
+    it('a box per subscription with how many accounts it has; its modal lists them in their order, and adds an OpenCode Go key', async () => {
         const client = fakeClient([CLAUDE('a1', 'ana@example.com', { noCreditUntil: '2026-11-25T15:00:00Z' }), CLAUDE('a2')]);
         const onChange = vi.fn();
         render(<RunnerAccounts client={client} scope="user" onChange={onChange} />, { wrapper: wrap });
-        expect(await screen.findByText('Claude Code (2)')).toBeTruthy();
-        expect(screen.getByText('OpenCode Go (0)')).toBeTruthy();
-        expect(screen.getByText('ana@example.com')).toBeTruthy();
-        expect(screen.getByText('Account 2')).toBeTruthy();
-        expect(screen.getByText(/Limit reached/)).toBeTruthy();
-        expect(screen.getByText('Available')).toBeTruthy();
-        expect(screen.getByText(/They are used in this order/)).toBeTruthy();
-        // OpenCode Go: its own button, a key and a name.
-        const addButtons = screen.getAllByText('Add subscription');
-        await act(async () => { fireEvent.click(addButtons[1]); });
-        fireEvent.change(document.querySelector('input[name="key"]') as HTMLInputElement, { target: { value: 'go-key-123456' } });
-        fireEvent.change(document.querySelector('input[name="label"]') as HTMLInputElement, { target: { value: 'team@example.com' } });
-        await act(async () => { fireEvent.click(screen.getByText('Add')); });
+        expect(await screen.findByText('2 connections')).toBeTruthy();
+        expect(screen.getByText('To connect')).toBeTruthy();
+        const claude = await openBox('Claude Code');
+        expect(within(claude).getByText('Claude Code (2)')).toBeTruthy();
+        expect(within(claude).getByText('ana@example.com')).toBeTruthy();
+        expect(within(claude).getByText('Account 2')).toBeTruthy();
+        expect(within(claude).getByText(/No credit until/)).toBeTruthy();
+        expect(within(claude).getByText('Available')).toBeTruthy();
+        expect(within(claude).getByText(/They are used in this order/)).toBeTruthy();
+        await act(async () => { fireEvent.click(within(claude).getByText('Close')); });
+
+        // OpenCode Go: its own box, a key and a name.
+        const go = await openBox('OpenCode Go');
+        await act(async () => { fireEvent.click(within(go).getByText('Add a key')); });
+        fireEvent.change(go.querySelector('input[name="key"]') as HTMLInputElement, { target: { value: 'go-key-123456' } });
+        fireEvent.change(go.querySelector('input[name="label"]') as HTMLInputElement, { target: { value: 'team@example.com' } });
+        await act(async () => { fireEvent.click(within(go).getByText('Add')); });
         await waitFor(() => expect(client.accounts.addKey).toHaveBeenCalledWith('opencode-go', 'go-key-123456', 'team@example.com'));
         await waitFor(() => expect(onChange).toHaveBeenCalled());
-        expect(await screen.findByText('OpenCode Go (1)')).toBeTruthy();
+        expect(await within(go).findByText('OpenCode Go (1)')).toBeTruthy();
     });
 
     it('renames an account with the email of the account', async () => {
         const client = fakeClient([CLAUDE('a1')]);
         render(<RunnerAccounts client={client} scope="tenant" />, { wrapper: wrap });
-        const rename = await screen.findByLabelText('Rename Account 1');
-        await act(async () => { fireEvent.click(rename); });
+        const claude = await openBox('Claude Code');
+        await act(async () => { fireEvent.click(within(claude).getByLabelText('Rename Account 1')); });
         const input = await waitFor(() => {
             const found = document.querySelector('input[name="label"]');
             if (!found) throw new Error('no name field');
@@ -81,38 +92,41 @@ describe('My subscriptions', () => {
         const client = fakeClient([CLAUDE('a1', 'ana@example.com')]);
         vi.spyOn(client.accounts, 'startClaudeLogin').mockResolvedValue({ url: 'https://claude.ai/oauth' });
         render(<RunnerAccounts client={client} scope="tenant" providers={['claude-code']} />, { wrapper: wrap });
-        const add = await screen.findByText('Add subscription');
-        await act(async () => { fireEvent.click(add); });
-        expect(await screen.findByText(/Pro and Max are personal subscriptions/)).toBeTruthy();
         expect(screen.queryByText(/OpenCode Go/)).toBeNull();
+        const claude = await openBox('Claude Code');
+        await act(async () => { fireEvent.click(within(claude).getByText('Add subscription')); });
+        expect(await within(claude).findByText(/Pro and Max are personal subscriptions/)).toBeTruthy();
     });
 
-    it('shows what the host gives under a subscription', async () => {
+    it('shows what the host gives under a subscription, in its modal', async () => {
         render(<RunnerAccounts client={fakeClient([CLAUDE('a1')])} scope="tenant" providers={['claude-code', 'opencode-go']} renderProvider={(provider, accounts) => <p>defaults of {provider}: {accounts.length}</p>} />, { wrapper: wrap });
-        expect(await screen.findByText('defaults of claude-code: 1')).toBeTruthy();
-        expect(screen.getByText('defaults of opencode-go: 0')).toBeTruthy();
+        const claude = await openBox('Claude Code');
+        expect(within(claude).getByText('defaults of claude-code: 1')).toBeTruthy();
     });
 
-    it('a tenant adds the API key of a provider by use, chosen in the list', async () => {
+    it('a tenant adds the API key of a provider by use, from its box', async () => {
         const client = fakeClient([]);
         render(<RunnerAccounts client={client} scope="tenant" />, { wrapper: wrap });
-        await screen.findByText(/API keys of the providers by use/);
-        await act(async () => { fireEvent.click(screen.getByText('Add a key')); });
+        expect(await screen.findByText('Pay as you go')).toBeTruthy();
+        const zen = await openBox('OpenCode Zen');
+        await act(async () => { fireEvent.click(within(zen).getByText('Add a key')); });
         const input = await waitFor(() => {
-            const found = document.querySelector('input[name="key"]');
+            const found = zen.querySelector('input[name="key"]');
             if (!found) throw new Error(`no key field: ${document.body.textContent}`);
             return found as HTMLInputElement;
         });
         fireEvent.change(input, { target: { value: 'zen-key-123456' } });
-        await act(async () => { fireEvent.click(screen.getByText('Add')); });
+        await act(async () => { fireEvent.click(within(zen).getByText('Add')); });
         await waitFor(() => expect(client.accounts.addKey).toHaveBeenCalledWith('opencode', 'zen-key-123456', undefined));
     });
 
     it('speaks Italian when asked', async () => {
         render(<RunnerAccounts client={fakeClient([])} scope="user" locale="it-IT" />, { wrapper: wrap });
         expect(await screen.findByText('I miei abbonamenti')).toBeTruthy();
-        expect(screen.getAllByText('Nessun abbonamento collegato.').length).toBe(2);
-        expect(screen.getAllByText('Aggiungi abbonamento').length).toBe(2);
+        expect(screen.getByText('Abbonamenti')).toBeTruthy();
+        const claude = await openBox('Claude Code');
+        expect(within(claude).getByText('Nessun abbonamento collegato.')).toBeTruthy();
+        expect(within(claude).getByText('Aggiungi abbonamento')).toBeTruthy();
     });
 });
 

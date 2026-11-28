@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActionButton, Alert, Badge, Card, Form, LoadingButton, Modal, ModalYesNo, Password, Select, SortableList, String as TextInput } from '@llmnative/react';
+import { ActionButton, Alert, Badge, Card, ConnectionBoard, ConnectionList, Form, LoadingButton, Modal, Password, Select, String as TextInput } from '@llmnative/react';
 import { RUNNER_KEY_PROVIDERS, RunnerError, type RunnerAccount, type RunnerClient, type RunnerProvider } from '../client';
 import { fill, textsFor, type RunnerUiTexts } from './texts';
 
-// The accounts of a scope on the runner: the subscriptions of the person ("My subscriptions"), or of a tenant. One
-// section per subscription (Claude Code, OpenCode Go), each with several accounts in the order they are used (when
-// one runs out of credit the next takes the turn), their state, their name (the email of the account), and the way
-// to add one: the sign-in of Anthropic (a link, then the code it shows; or a token of `claude setup-token`) for
-// Claude, a key for OpenCode Go. For a tenant, the API keys of the providers by use opencode runs on the runner too.
+// The accounts of a scope on the runner: the subscriptions of the person ("My subscriptions"), or of a tenant. As the
+// connections of the framework (CR-157 of @llmnative/react): a box per provider (Claude Code, OpenCode Go and, for a
+// tenant, the providers by use opencode runs on the runner) with how many accounts it has; its modal lists them in the
+// order they are used (when one runs out of credit the next takes the turn), with their state and their name (the
+// email of the account), and adds one its own way: the sign-in of Anthropic (a link, then the code it shows; or a
+// token of `claude setup-token`) for Claude, an API key for the others.
 // Tokens never reach the browser: the runner keeps them.
 
 export type RunnerAccountsProps = {
@@ -40,10 +41,15 @@ const timeOf = (iso: string) => new Date(iso).toLocaleString(undefined, { dateSt
 export function RunnerAccounts({ client, scope, locale, texts, onChange, providers, renderProvider, onStack }: RunnerAccountsProps) {
     const t = textsFor(locale, texts);
     const offered = providers ?? (scope === 'tenant' ? [...SUBSCRIPTIONS, 'opencode' as const, ...RUNNER_KEY_PROVIDERS] : SUBSCRIPTIONS);
-    const subscriptions = SUBSCRIPTIONS.filter((id) => offered.includes(id));
-    const byUse = offered.filter((id): id is Exclude<RunnerProvider, 'claude-code'> => !SUBSCRIPTIONS.includes(id));
     const [accounts, setAccounts] = useState<RunnerAccount[] | null>(null);
     const [error, setError] = useState<string | null>(null);
+    // The provider whose modal is open, and whether a modal of the list (rename, revoke) is over it.
+    const [open, setOpenState] = useState<RunnerProvider | null>(null);
+    const [stacked, setStacked] = useState(false);
+    const setOpen = (provider: RunnerProvider | null) => {
+        setOpenState(provider);
+        onStack?.(provider !== null);
+    };
 
     const load = useCallback(async () => {
         try {
@@ -67,159 +73,98 @@ export function RunnerAccounts({ client, scope, locale, texts, onChange, provide
         if (list) setAccounts(list);
         onChange?.(next);
     };
+    const of = (provider: RunnerProvider) => (accounts ?? []).filter((account) => account.provider === provider);
+    const describe = (provider: RunnerProvider) => (provider === 'claude-code' ? t.boxClaudeCode : provider === 'opencode-go' ? t.boxOpencodeGo : fill(t.boxByUse, { provider: nameOf(provider) }));
 
     return (
         <Card title={scope === 'user' ? t.accountsTitleUser : t.accountsTitleTenant} loading={accounts === null} loaderMinHeight={120}>
-            <div className="flex flex-col gap-6">
+            <div className="flex flex-col gap-4">
                 <p className="text-sm text-muted-foreground">{scope === 'user' ? t.accountsIntroUser : t.accountsIntroTenant}</p>
                 {error && <Alert variant="danger">{fill(t.error, { error })}</Alert>}
-                {accounts && subscriptions.map((provider) => (
-                    <ProviderSection
-                        key={provider}
-                        client={client}
-                        t={t}
-                        provider={provider}
-                        accounts={accounts.filter((account) => account.provider === provider)}
-                        onChanged={changed}
-                        onStack={onStack}
-                        extra={renderProvider?.(provider, accounts.filter((account) => account.provider === provider))}
-                    />
-                ))}
-                {accounts && byUse.length > 0 && (
-                    <ProviderSection
-                        client={client}
-                        t={t}
-                        provider={byUse}
-                        accounts={accounts.filter((account) => byUse.includes(account.provider as Exclude<RunnerProvider, 'claude-code'>))}
-                        onChanged={changed}
-                        onStack={onStack}
+                {accounts && (
+                    <ConnectionBoard
+                        items={offered.map((provider) => {
+                            const list = of(provider);
+                            const out = list.filter((account) => account.noCreditUntil);
+                            return {
+                                id: provider,
+                                label: nameOf(provider),
+                                description: describe(provider),
+                                icon: provider === 'claude-code' ? 'user' : 'key-round',
+                                group: SUBSCRIPTIONS.includes(provider) ? 'subscription' as const : 'usage' as const,
+                                count: list.length,
+                                // Out of credit when all its accounts are: until the first comes back.
+                                status: list.length > 0 && out.length === list.length
+                                    ? <Badge variant="warning">{fill(t.accountsNoCredit, { at: timeOf(out.map((account) => account.noCreditUntil!).sort()[0]) })}</Badge>
+                                    : undefined,
+                            };
+                        })}
+                        titles={{ subscription: t.groupSubscriptions, usage: t.groupUsage }}
+                        onOpen={(id) => setOpen(id as RunnerProvider)}
                     />
                 )}
                 <p className="text-xs text-muted-foreground">{t.termsNote}</p>
             </div>
+            {open && accounts && (
+                <Modal title={nameOf(open)} position="right" size="lg" stackedBehind={stacked} onClose={() => setOpen(null)} footer={<ActionButton variant="link" label={t.close} onClick={() => setOpen(null)} />}>
+                    <ProviderAccounts
+                        client={client}
+                        t={t}
+                        provider={open}
+                        accounts={of(open)}
+                        onChanged={changed}
+                        onStack={setStacked}
+                        extra={renderProvider?.(open, of(open))}
+                    />
+                </Modal>
+            )}
         </Card>
     );
 }
 
-/** The accounts of one subscription (or of the providers by use, `provider` a list), in their order. */
-function ProviderSection({ client, t, provider, accounts, onChanged, onStack, extra }: {
+/** The accounts of one provider, in the order they are used, as `ConnectionList`; added with its own way in. */
+function ProviderAccounts({ client, t, provider, accounts, onChanged, onStack, extra }: {
     client: RunnerClient;
     t: RunnerUiTexts;
-    provider: RunnerProvider | Array<Exclude<RunnerProvider, 'claude-code'>>;
+    provider: RunnerProvider;
     accounts: RunnerAccount[];
     onChanged: (list?: RunnerAccount[]) => Promise<void>;
-    onStack?: (open: boolean) => void;
+    onStack: (open: boolean) => void;
     extra?: React.ReactNode;
 }) {
-    const single = typeof provider === 'string' ? provider : undefined;
-    const title = single ? fill(t.accountsSection, { name: nameOf(single), count: String(accounts.length) }) : fill(t.accountsByUse, { count: String(accounts.length) });
-    const [adding, setAdding] = useState(false);
-    const [renaming, setRenamingState] = useState<RunnerAccount | null>(null);
-    const setRenaming = (account: RunnerAccount | null) => {
-        setRenamingState(account);
-        onStack?.(account !== null);
-    };
-    const [removing, setRemoving] = useState<RunnerAccount | null>(null);
     const [error, setError] = useState<string | null>(null);
-    const label = (account: RunnerAccount, index: number) => account.label || fill(t.accountsUnnamed, { n: String(index + 1) });
     const failed = (failure: unknown) => setError(fill(t.error, { error: failure instanceof RunnerError ? failure.code : String(failure) }));
-
+    const accountOf = (id: string) => accounts.find((account) => account.id === id)!;
     return (
-        <section className="flex flex-col gap-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-                <h5 className="text-sm font-semibold">{title}</h5>
-                {!adding && (
-                    <ActionButton
-                        icon="plus"
-                        variant="outline-primary"
-                        label={single ? t.accountsAdd : t.keyConnect}
-                        onClick={() => { setError(null); setAdding(true); }}
-                    />
-                )}
-            </div>
+        <div className="flex flex-col gap-5">
+            <p className="text-sm text-muted-foreground">{provider === 'claude-code' ? t.boxClaudeCode : provider === 'opencode-go' ? t.boxOpencodeGo : fill(t.boxByUse, { provider: nameOf(provider) })}</p>
             {error && <Alert variant="danger">{error}</Alert>}
-            <SortableList
-                items={accounts}
-                getKey={(account) => `${account.provider}/${account.id}`}
-                label={title}
-                numbered={!!single && accounts.length > 1}
-                disabled={!single}
-                emptyState={<p className="text-sm text-muted-foreground">{t.accountsEmpty}</p>}
-                onReorder={(next) => {
-                    if (!single) return;
-                    client.accounts.order(single, next.map((account) => account.id)).then((list) => onChanged(list), failed);
+            <ConnectionList
+                items={accounts.map((account) => ({
+                    id: account.id,
+                    label: account.label,
+                    icon: account.provider === 'claude-code' ? 'user' : 'key-round',
+                    meta: fill(t.accountsAddedOn, { date: dateOf(account.at) }),
+                    exhaustedUntil: account.noCreditUntil,
+                }))}
+                title={fill(t.accountsSection, { name: nameOf(provider), count: String(accounts.length) })}
+                emptyText={t.accountsEmpty}
+                unnamed={t.accountsUnnamed}
+                orderHint={t.accountsOrderHint}
+                addLabel={provider === 'claude-code' ? t.accountsAdd : t.keyConnect}
+                onStack={onStack}
+                onReorder={(ids) => client.accounts.order(provider, ids).then((list) => onChanged(list), failed)}
+                onRename={async (id, label) => { await onChanged(await client.accounts.rename(provider, id, label)); }}
+                onRemove={async (id) => {
+                    await client.accounts.remove(accountOf(id).provider, id).catch(failed);
+                    await onChanged();
                 }}
-                renderItem={(account, index) => ({
-                    icon: account.provider === 'claude-code' ? 'user' : 'key',
-                    title: label(account, index),
-                    meta: [single ? undefined : nameOf(account.provider), fill(t.accountsAddedOn, { date: dateOf(account.at) })].filter(Boolean).join(' · '),
-                    badge: account.noCreditUntil
-                        ? <Badge variant="warning">{fill(t.accountsNoCredit, { at: timeOf(account.noCreditUntil) })}</Badge>
-                        : <Badge variant="success">{t.accountsAvailable}</Badge>,
-                    trailing: (
-                        <div className="flex items-center gap-1">
-                            <ActionButton icon="pencil" variant="link" ariaLabel={fill(t.accountsRenameAria, { name: label(account, index) })} onClick={() => setRenaming(account)} />
-                            <ActionButton icon="trash-2" variant="link" ariaLabel={fill(t.accountsRemoveAria, { name: label(account, index) })} onClick={() => setRemoving(account)} />
-                        </div>
-                    ),
-                })}
+                renderAdd={(done) => (provider === 'claude-code'
+                    ? <ClaudeSignIn client={client} t={t} others={accounts.length} onDone={async () => { done(); await onChanged(); }} onCancel={done} />
+                    : <ProviderKey client={client} t={t} providers={[provider as Exclude<RunnerProvider, 'claude-code'>]} onDone={async () => { done(); await onChanged(); }} onCancel={done} />)}
             />
-            {single && accounts.length > 1 && <p className="text-xs text-muted-foreground">{t.accountsOrderHint}</p>}
-            {adding && (single === 'claude-code'
-                ? <ClaudeSignIn client={client} t={t} others={accounts.length} onDone={async () => { setAdding(false); await onChanged(); }} onCancel={() => setAdding(false)} />
-                : <ProviderKey client={client} t={t} providers={single ? [single as Exclude<RunnerProvider, 'claude-code'>] : provider as Array<Exclude<RunnerProvider, 'claude-code'>>} onDone={async () => { setAdding(false); await onChanged(); }} onCancel={() => setAdding(false)} />)}
             {extra}
-            {renaming && <RenameAccount client={client} t={t} account={renaming} onClose={() => setRenaming(null)} onDone={async (list) => { setRenaming(null); await onChanged(list); }} />}
-            {removing && (
-                <ModalYesNo
-                    title={t.accountsRemove}
-                    danger
-                    onClose={() => setRemoving(null)}
-                    onYes={async () => {
-                        await client.accounts.remove(removing.provider, removing.id).catch(() => false);
-                        setRemoving(null);
-                        await onChanged();
-                        return true;
-                    }}
-                >
-                    {fill(t.accountsRemoveConfirm, { name: removing.label ?? nameOf(removing.provider) })}
-                </ModalYesNo>
-            )}
-        </section>
-    );
-}
-
-function RenameAccount({ client, t, account, onClose, onDone }: { client: RunnerClient; t: RunnerUiTexts; account: RunnerAccount; onClose: () => void; onDone: (list: RunnerAccount[]) => Promise<void> }) {
-    const [name, setName] = useState(account.label ?? '');
-    const [error, setError] = useState<string | null>(null);
-    return (
-        <Modal
-            title={t.accountsRenameTitle}
-            position="right"
-            size="sm"
-            onClose={onClose}
-            footer={(
-                <>
-                    <ActionButton variant="link" label={t.cancel} onClick={onClose} />
-                    <LoadingButton
-                        variant="primary"
-                        label={t.accountsSave}
-                        onClick={async () => {
-                            try {
-                                await onDone(await client.accounts.rename(account.provider, account.id, name.trim()));
-                            } catch (failure) {
-                                setError(fill(t.error, { error: failure instanceof RunnerError ? failure.code : String(failure) }));
-                            }
-                        }}
-                    />
-                </>
-            )}
-        >
-            {error && <Alert variant="danger">{error}</Alert>}
-            <Form appearance="empty" showNotice={false} defaultValues={{ label: account.label ?? '' }} onSubmit={() => false}>
-                <TextInput name="label" label={t.accountsName} placeholder={t.claudeLabelPlaceholder} onChange={({ value }) => setName(String(value ?? ''))} />
-            </Form>
-        </Modal>
+        </div>
     );
 }
 

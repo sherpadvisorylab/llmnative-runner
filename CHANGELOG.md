@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 Images and npm package share the version.
 
+## [1.5.0] - 2026-11-28
+
+### Changed
+- `RunnerAccounts` as the connections of the framework (CR-157 of @llmnative/react 3.22.0): a box per provider
+  (Claude Code, OpenCode Go and, for a tenant, each provider by use) with how many accounts it has, or their state when
+  all are out of credit; the box opens its modal with the accounts in the order they are used (`ConnectionList`):
+  renamed, ordered, revoked, added with the sign-in of Anthropic or an API key, and what the host gives under them
+  (`renderProvider`). `onStack` also when that modal opens. The peer `@llmnative/react` is now `^3.22.0`.
+
 ## [1.4.0] - 2026-11-27
 
 ### Added

@@ -1,6 +1,6 @@
 {
   "name": "@llmnative/runner",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "LLMNative Runner: Claude Code and opencode on your own VPS, for many tenants, with subscriptions per person. Client, management UI and installer of the runner.",
   "type": "module",
   "exports": {
@@ -74,7 +74,7 @@
   },
   "packageManager": "npm@11.11.0",
   "peerDependencies": {
-    "@llmnative/react": "^3.2.0",
+    "@llmnative/react": "^3.22.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
@@ -93,7 +93,7 @@
     "ssh2": "^1.16.0"
   },
   "devDependencies": {
-    "@llmnative/react": "^3.2.0",
+    "@llmnative/react": "^3.22.0",
     "@phosphor-icons/react": "^2.1.10",
     "@supabase/supabase-js": "^2.119.0",
     "@testing-library/jest-dom": "^7.0.1",
